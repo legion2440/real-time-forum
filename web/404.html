@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>404 - Page Missing</title>
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --bg-elevated: #ffffff;
+      --bg-soft: #eef2f8;
+      --surface: #ffffff;
+      --text: #121722;
+      --text-soft: #5f6f88;
+      --line: #e2e8f3;
+      --primary: #3b82f6;
+      --primary-strong: #2563eb;
+      --shadow: 0 12px 32px rgba(17, 24, 39, 0.08);
+      --shadow-soft: 0 2px 10px rgba(17, 24, 39, 0.05);
+      --error-code: #9aa7bc;
+    }
+
+    :root[data-theme="dark"] {
+      --bg: #06080d;
+      --bg-elevated: #0d1118;
+      --bg-soft: #141a25;
+      --surface: #0d121c;
+      --text: #edf1fb;
+      --text-soft: #aab6cc;
+      --line: #1e2637;
+      --primary: #8b5cf6;
+      --primary-strong: #7c3aed;
+      --shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+      --shadow-soft: 0 4px 12px rgba(0, 0, 0, 0.25);
+      --error-code: #6f7d97;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #06080d;
+        --bg-elevated: #0d1118;
+        --bg-soft: #141a25;
+        --surface: #0d121c;
+        --text: #edf1fb;
+        --text-soft: #aab6cc;
+        --line: #1e2637;
+        --primary: #8b5cf6;
+        --primary-strong: #7c3aed;
+        --shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+        --shadow-soft: 0 4px 12px rgba(0, 0, 0, 0.25);
+        --error-code: #6f7d97;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+    }
+
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(900px 520px at 12% -12%, rgba(59, 130, 246, 0.08), transparent 60%),
+        radial-gradient(860px 460px at 108% 5%, rgba(139, 92, 246, 0.08), transparent 58%),
+        var(--bg);
+    }
+
+    .wrap {
+      min-height: 100vh;
+      padding: 24px;
+      display: grid;
+      place-items: stretch;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+      box-shadow: var(--shadow);
+      padding: 36px 32px 24px;
+      position: relative;
+      backdrop-filter: blur(12px);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) clamp(220px, 24vw, 380px);
+      grid-template-rows: auto auto auto 1fr auto;
+      column-gap: clamp(18px, 2.2vw, 30px);
+      align-items: start;
+      min-height: calc(100vh - 48px);
+    }
+
+    .content {
+      grid-column: 1 / -1;
+      grid-row: 1 / span 4;
+      align-self: center;
+      justify-self: center;
+      width: min(100%, 860px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: color-mix(in srgb, var(--primary) 68%, var(--text-soft));
+      border-radius: 0;
+      padding: 0;
+      font-size: clamp(2rem, 5vw, 3.4rem);
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+      box-shadow: none;
+    }
+
+    .title {
+      margin: 16px 0 10px;
+      font-size: clamp(2rem, 6vw, 3.25rem);
+      line-height: 1.3;
+      letter-spacing: -0.03em;
+      font-weight: 900;
+      padding-bottom: 0.05em;
+      color: var(--primary-strong);
+      background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      margin: 0;
+      max-width: 42ch;
+      font-size: clamp(1rem, 2vw, 1.15rem);
+      line-height: 1.55;
+      color: var(--text-soft);
+    }
+
+    .actions {
+      margin-top: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-width: 190px;
+      height: 52px;
+      padding: 0 18px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: var(--surface);
+      text-decoration: none;
+      font-weight: 700;
+      box-shadow: var(--shadow-soft);
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      border-color: transparent;
+      color: #fff;
+      background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+    }
+
+    .btn-ghost {
+      background: var(--bg-soft);
+      color: var(--primary);
+      border-color: color-mix(in srgb, var(--primary) 20%, var(--line));
+    }
+
+    .btn:hover {
+      filter: brightness(1.02);
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .icon {
+      width: 18px;
+      height: 18px;
+      display: inline-block;
+      flex: 0 0 auto;
+    }
+
+    .icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .error-code {
+      grid-column: 1;
+      align-self: end;
+      margin-top: 16px;
+      color: var(--error-code);
+      font: 700 0.82rem/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .gif-box {
+      grid-column: 2;
+      grid-row: 1 / -1;
+      align-self: end;
+      justify-self: end;
+      width: min(100%, 360px);
+      max-width: 360px;
+      min-width: 180px;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .gif-box img {
+      width: 100%;
+      height: auto;
+      display: block;
+      object-fit: contain;
+      filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.16));
+      mix-blend-mode: normal;
+    }
+
+    .decor {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(4px);
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    .decor.a {
+      width: 220px;
+      height: 220px;
+      top: -70px;
+      right: 80px;
+      background: radial-gradient(circle at 35% 35%, rgba(59,130,246,0.22), transparent 70%);
+    }
+
+    .decor.b {
+      width: 180px;
+      height: 180px;
+      bottom: 70px;
+      left: -30px;
+      background: radial-gradient(circle at 50% 50%, rgba(139,92,246,0.18), transparent 72%);
+    }
+
+    @media (max-width: 720px) {
+      .panel {
+        padding: 26px 18px 20px;
+        border-radius: 18px;
+        min-height: auto;
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+      }
+
+      .content {
+        grid-row: auto;
+        width: 100%;
+      }
+
+      .actions {
+        flex-direction: column;
+      }
+
+      .btn {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .gif-box {
+        grid-column: 1;
+        grid-row: auto;
+        width: min(200px, 58vw);
+        justify-self: end;
+        margin-top: 12px;
+        opacity: 0.95;
+      }
+
+      .error-code {
+        max-width: 100%;
+        font-size: 0.72rem;
+      }
+    }
+  </style>
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (_) {}
+    })();
+    function goBackSafe() {
+      if (history.length > 1) {
+        history.back();
+        return;
+      }
+      location.href = "/";
+    }
+  </script>
+</head>
+<body>
+  <main class="wrap" aria-labelledby="nf-title">
+    <div class="decor a" aria-hidden="true"></div>
+    <div class="decor b" aria-hidden="true"></div>
+    <section class="panel" role="alert">
+      <div class="content">
+        <div class="badge" aria-hidden="true">404</div>
+        <h1 id="nf-title" class="title">Oops! This page is lost in space...</h1>
+        <p class="subtitle">
+          The link you followed might be broken, or the page may have been moved to a different galaxy.
+        </p>
+
+        <div class="actions">
+          <a class="btn btn-primary" href="/">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span>Back to Home</span>
+          </a>
+          <button class="btn btn-ghost" type="button" onclick="goBackSafe()">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path d="M19 12H5m0 0 5.5-5.5M5 12l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span>Go Back</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="error-code">SYSTEM ERROR: 0X404_PAGE_MISSING</div>
+      <div class="gif-box" aria-hidden="false">
+        <img src="/assets/media/404-gif.gif" alt="Animated character looking around in confusion while a page is missing" />
+      </div>
+    </section>
+  </main>
+</body>
+</html>

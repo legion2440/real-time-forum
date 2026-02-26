@@ -1,0 +1,13 @@
+# build outputs
+bin/
+
+# temp files
+tmp/
+
+# sqlite db
+forum.db
+*.db
+
+# editor/OS
+.DS_Store
+Thumbs.db
