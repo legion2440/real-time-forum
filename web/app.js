@@ -16,7 +16,48 @@ const state = {
   theme: getInitialTheme(),
 };
 
+let realtimeSocket = null;
+
 applyTheme(state.theme);
+
+function closeRealtimeSocket() {
+  if (!realtimeSocket) return;
+  const socket = realtimeSocket;
+  realtimeSocket = null;
+  if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) return;
+  socket.close();
+}
+
+function ensureRealtimeSocket() {
+  if (!state.user) {
+    closeRealtimeSocket();
+    return;
+  }
+  if (typeof WebSocket === "undefined") return;
+  if (realtimeSocket && (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const socket = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  realtimeSocket = socket;
+
+  socket.onopen = () => {
+    if (realtimeSocket !== socket) return;
+    console.log("ws connected");
+  };
+
+  socket.onmessage = (event) => {
+    if (realtimeSocket !== socket) return;
+    console.log("ws message", event.data);
+  };
+
+  socket.onclose = () => {
+    if (realtimeSocket === socket) {
+      realtimeSocket = null;
+    }
+    console.log("ws closed");
+  };
+}
 
 function getInitialTheme() {
   try {
@@ -268,6 +309,7 @@ function handleSessionEndedUX(message) {
   state.user = null;
   state.filters.mine = false;
   state.filters.liked = false;
+  closeRealtimeSocket();
 
   if (!state.authSessionNoticeOpen) {
     state.authSessionNoticeOpen = true;
@@ -534,6 +576,7 @@ function bindHeaderActions() {
       state.user = null;
       state.filters.mine = false;
       state.filters.liked = false;
+      closeRealtimeSocket();
       navigate("/login");
     });
   }
@@ -767,12 +810,16 @@ function bindCommentComposerAutosize() {
 }
 
 async function ensureUser(force = false) {
-  if (state.user && !force) return;
+  if (state.user && !force) {
+    ensureRealtimeSocket();
+    return;
+  }
   try {
     state.user = await apiFetch("/api/me");
   } catch (_) {
     state.user = null;
   }
+  ensureRealtimeSocket();
 }
 
 async function ensureCategories() {
@@ -893,13 +940,15 @@ async function loginView() {
         e.preventDefault();
         const data = new FormData(form);
         try {
-          state.user = await apiFetch("/api/login", {
+          await apiFetch("/api/login", {
             method: "POST",
             body: JSON.stringify({
               email: data.get("email"),
               password: data.get("password"),
             }),
           });
+          await ensureUser(true);
+          ensureRealtimeSocket();
           navigate("/");
         } catch (err) {
           if (err && err.handled) return;
@@ -926,10 +975,12 @@ async function registerView() {
         };
         try {
           await apiFetch("/api/register", { method: "POST", body: JSON.stringify(payload) });
-          state.user = await apiFetch("/api/login", {
+          await apiFetch("/api/login", {
             method: "POST",
             body: JSON.stringify({ email: payload.email, password: payload.password }),
           });
+          await ensureUser(true);
+          ensureRealtimeSocket();
           navigate("/");
         } catch (err) {
           if (err && err.handled) return;
@@ -1278,6 +1329,7 @@ async function router() {
     const view = await match.route.view(match.params || {});
     app.innerHTML = view.html;
     if (view.onMount) view.onMount();
+    ensureRealtimeSocket();
   } catch (err) {
     app.innerHTML = renderLayout({
       mode: "feed",
@@ -1285,6 +1337,7 @@ async function router() {
       content: `<div class="surface error-card"><h2>UI Error</h2><p>${escapeHTML(err.message || "Unknown error")}</p><a class="btn btn-primary" data-link href="/">Back to feed</a></div>`,
     });
     bindHeaderActions();
+    ensureRealtimeSocket();
   }
 }
 
@@ -1342,5 +1395,9 @@ document.addEventListener("click", (e) => {
   navigate(href);
 });
 
-router();
+(async () => {
+  await ensureUser(true);
+  ensureRealtimeSocket();
+  router();
+})();
 

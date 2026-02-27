@@ -41,6 +41,7 @@ func (h *Handler) Routes(webDir string) http.Handler {
 
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/api/", h.authMiddleware(apiMux))
+	rootMux.Handle("/ws", h.authMiddleware(http.HandlerFunc(h.handleWS)))
 	rootMux.Handle("/", spaHandler(webDir))
 
 	return recoverMiddleware(rootMux)
