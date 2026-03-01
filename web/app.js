@@ -3,6 +3,9 @@ const THEME_KEY = "theme";
 
 const state = {
   user: null,
+  users: [],
+  usersLoaded: false,
+  onlineUserIDs: new Set(),
   categories: [],
   filters: {
     cat: new Set(),
@@ -19,6 +22,25 @@ const state = {
 let realtimeSocket = null;
 
 applyTheme(state.theme);
+
+function normalizeUserID(value) {
+  return String(value ?? "").trim();
+}
+
+function clearPresenceState() {
+  state.users = [];
+  state.usersLoaded = false;
+  state.onlineUserIDs = new Set();
+  syncPresencePanel();
+}
+
+function clearAuthenticatedState() {
+  state.user = null;
+  state.filters.mine = false;
+  state.filters.liked = false;
+  clearPresenceState();
+  closeRealtimeSocket();
+}
 
 function closeRealtimeSocket() {
   if (!realtimeSocket) return;
@@ -48,7 +70,12 @@ function ensureRealtimeSocket() {
 
   socket.onmessage = (event) => {
     if (realtimeSocket !== socket) return;
-    console.log("ws message", event.data);
+    try {
+      const payload = JSON.parse(event.data);
+      handleRealtimeMessage(payload);
+    } catch (err) {
+      console.warn("ws invalid message", err);
+    }
   };
 
   socket.onclose = () => {
@@ -306,10 +333,7 @@ function getAuthorDisplay(entity) {
 
 function handleSessionEndedUX(message) {
   const text = String(message || "Session ended. Please sign in again.").trim();
-  state.user = null;
-  state.filters.mine = false;
-  state.filters.liked = false;
-  closeRealtimeSocket();
+  clearAuthenticatedState();
 
   if (!state.authSessionNoticeOpen) {
     state.authSessionNoticeOpen = true;
@@ -466,6 +490,7 @@ function renderSidebar(mode) {
             `
       }
 
+      ${renderPresencePanel()}
     </aside>
   `;
 }
@@ -496,6 +521,68 @@ function renderLayout({ mode = "feed", content, hideHeading = false, title = "",
 
 function renderNotice(msg) {
   return `<div class="notice-box">${escapeHTML(msg)}</div>`;
+}
+
+function renderPresencePanel() {
+  return `
+    <div id="presence-panel" class="sidebar-block">
+      ${renderPresencePanelContent()}
+    </div>
+  `;
+}
+
+function renderPresencePanelContent() {
+  if (!state.user) {
+    return `
+      <div class="sidebar-title">Presence</div>
+      <div class="side-note">Login to see who is online.</div>
+    `;
+  }
+
+  const onlineUsers = [];
+  const offlineUsers = [];
+
+  (state.users || []).forEach((user) => {
+    const id = normalizeUserID(user && user.id);
+    if (!id) return;
+    if (state.onlineUserIDs.has(id)) {
+      onlineUsers.push(user);
+      return;
+    }
+    offlineUsers.push(user);
+  });
+
+  return `
+    <div class="sidebar-title">Presence</div>
+    <div class="side-note">${onlineUsers.length} online / ${offlineUsers.length} offline</div>
+    <div class="sidebar-title">Online</div>
+    <div class="side-tag-list">
+      ${renderPresenceUsers(onlineUsers, "Nobody online")}
+    </div>
+    <div class="sidebar-title">Offline</div>
+    <div class="side-tag-list">
+      ${renderPresenceUsers(offlineUsers, "Nobody offline")}
+    </div>
+  `;
+}
+
+function renderPresenceUsers(users, emptyLabel) {
+  if (!Array.isArray(users) || users.length === 0) {
+    return `<span class="side-tag">${escapeHTML(emptyLabel)}</span>`;
+  }
+
+  return users
+    .map((user) => {
+      const name = String(user?.name ?? "").trim() || `user-${normalizeUserID(user?.id)}`;
+      return `<span class="side-tag">${escapeHTML(name)}</span>`;
+    })
+    .join("");
+}
+
+function syncPresencePanel() {
+  const panel = document.getElementById("presence-panel");
+  if (!panel) return;
+  panel.innerHTML = renderPresencePanelContent();
 }
 
 function renderEmpty(title, text, href, cta) {
@@ -573,10 +660,7 @@ function bindHeaderActions() {
       } catch (_) {
         // ignore
       }
-      state.user = null;
-      state.filters.mine = false;
-      state.filters.liked = false;
-      closeRealtimeSocket();
+      clearAuthenticatedState();
       navigate("/login");
     });
   }
@@ -811,15 +895,89 @@ function bindCommentComposerAutosize() {
 
 async function ensureUser(force = false) {
   if (state.user && !force) {
+    if (!state.usersLoaded) {
+      await ensureUsersLoaded();
+    }
     ensureRealtimeSocket();
     return;
   }
+
+  const previousUserID = normalizeUserID(state.user && state.user.id);
   try {
     state.user = await apiFetch("/api/me");
   } catch (_) {
-    state.user = null;
+    clearAuthenticatedState();
+    return;
+  }
+
+  const currentUserID = normalizeUserID(state.user && state.user.id);
+  if (!state.usersLoaded || previousUserID !== currentUserID) {
+    await ensureUsersLoaded(previousUserID !== currentUserID);
   }
   ensureRealtimeSocket();
+}
+
+async function ensureUsersLoaded(force = false) {
+  if (!state.user) {
+    clearPresenceState();
+    return;
+  }
+  if (state.usersLoaded && !force) {
+    syncPresencePanel();
+    return;
+  }
+
+  try {
+    const users = (await apiFetch("/api/users")) || [];
+    state.users = Array.isArray(users)
+      ? users
+          .map((user) => ({
+            id: normalizeUserID(user && user.id),
+            name: String(user && user.name ? user.name : "").trim(),
+          }))
+          .filter((user) => user.id)
+      : [];
+    state.usersLoaded = true;
+  } catch (_) {
+    clearPresenceState();
+    return;
+  }
+
+  syncPresencePanel();
+}
+
+function handleRealtimeMessage(payload) {
+  if (!payload || typeof payload !== "object") return;
+
+  if (payload.type === "presence:init") {
+    const nextOnline = new Set();
+    const users = Array.isArray(payload.users) ? payload.users : [];
+    users.forEach((user) => {
+      const id = normalizeUserID(user && user.id);
+      if (id) nextOnline.add(id);
+    });
+    state.onlineUserIDs = nextOnline;
+    syncPresencePanel();
+    return;
+  }
+
+  if (payload.type === "presence:update") {
+    const userID = normalizeUserID(payload.user && payload.user.id);
+    if (!userID) return;
+
+    if (payload.status === "online") {
+      state.onlineUserIDs.add(userID);
+    } else if (payload.status === "offline") {
+      state.onlineUserIDs.delete(userID);
+    } else {
+      return;
+    }
+
+    syncPresencePanel();
+    return;
+  }
+
+  console.log("ws message", payload);
 }
 
 async function ensureCategories() {

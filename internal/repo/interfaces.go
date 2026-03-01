@@ -11,6 +11,8 @@ type UserRepo interface {
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByUsername(ctx context.Context, username string) (*domain.User, error)
 	GetByID(ctx context.Context, id int64) (*domain.User, error)
+	List(ctx context.Context) ([]domain.User, error)
+	ListPublic(ctx context.Context) ([]domain.User, error)
 }
 
 type SessionRepo interface {

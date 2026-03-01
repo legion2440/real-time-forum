@@ -37,12 +37,15 @@ type helloUser struct {
 type Client struct {
 	conn *websocket.Conn
 	send chan []byte
+	hub  *Hub
 
 	userID   int64
 	userName string
+	ready    bool
 
-	done      chan struct{}
-	closeOnce sync.Once
+	done           chan struct{}
+	closeOnce      sync.Once
+	unregisterOnce sync.Once
 }
 
 var upgrader = websocket.Upgrader{
@@ -69,7 +72,7 @@ func IsSameOrigin(r *http.Request) bool {
 	return strings.EqualFold(parsed.Host, r.Host)
 }
 
-func ServeWS(w http.ResponseWriter, r *http.Request, user User) error {
+func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, user User) error {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return err
@@ -78,10 +81,13 @@ func ServeWS(w http.ResponseWriter, r *http.Request, user User) error {
 	client := &Client{
 		conn:     conn,
 		send:     make(chan []byte, 8),
+		hub:      hub,
 		userID:   user.ID,
 		userName: strings.TrimSpace(user.Name),
 		done:     make(chan struct{}),
 	}
+
+	hub.register <- client
 
 	helloPayload, err := json.Marshal(helloMessage{
 		Type: "hello",
@@ -91,11 +97,12 @@ func ServeWS(w http.ResponseWriter, r *http.Request, user User) error {
 		},
 	})
 	if err != nil {
-		client.close()
+		client.unregister()
 		return err
 	}
 
 	client.send <- helloPayload
+	hub.initialize <- client
 
 	go client.writePump()
 	client.readPump()
@@ -104,7 +111,7 @@ func ServeWS(w http.ResponseWriter, r *http.Request, user User) error {
 }
 
 func (c *Client) readPump() {
-	defer c.close()
+	defer c.unregister()
 
 	c.conn.SetReadLimit(maxMessageSize)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -123,7 +130,7 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.close()
+		c.unregister()
 	}()
 
 	for {
@@ -163,4 +170,14 @@ func (c *Client) close() {
 		close(c.send)
 		_ = c.conn.Close()
 	})
+}
+
+func (c *Client) unregister() {
+	c.unregisterOnce.Do(func() {
+		c.hub.unregister <- c
+	})
+}
+
+func (c *Client) markUnregistered() {
+	c.unregisterOnce.Do(func() {})
 }

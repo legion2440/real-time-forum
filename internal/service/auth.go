@@ -176,3 +176,11 @@ func (s *AuthService) GetUserByID(ctx context.Context, id int64) (*domain.User, 
 	}
 	return user, nil
 }
+
+func (s *AuthService) ListUsers(ctx context.Context) ([]domain.User, error) {
+	return s.users.List(ctx)
+}
+
+func (s *AuthService) ListUsersPublic(ctx context.Context) ([]domain.User, error) {
+	return s.users.ListPublic(ctx)
+}

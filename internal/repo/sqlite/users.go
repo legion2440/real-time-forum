@@ -87,3 +87,59 @@ func (r *UserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) 
 	u.CreatedAt = unixToTime(created)
 	return &u, nil
 }
+
+func (r *UserRepo) List(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `
+        SELECT id, email, username, pass_hash, created_at
+        FROM users
+        ORDER BY id ASC
+    `)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]domain.User, 0)
+	for rows.Next() {
+		var user domain.User
+		var created int64
+		if err := rows.Scan(&user.ID, &user.Email, &user.Username, &user.PassHash, &created); err != nil {
+			return nil, err
+		}
+		user.CreatedAt = unixToTime(created)
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return users, nil
+}
+
+func (r *UserRepo) ListPublic(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `
+        SELECT id, username
+        FROM users
+        ORDER BY id ASC
+    `)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]domain.User, 0)
+	for rows.Next() {
+		var user domain.User
+		if err := rows.Scan(&user.ID, &user.Username); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return users, nil
+}

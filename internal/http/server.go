@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	realtimews "forum/internal/realtime/ws"
 	"forum/internal/service"
 )
 
@@ -15,12 +16,17 @@ const sessionCookieName = "forum_session"
 type Handler struct {
 	auth  *service.AuthService
 	posts *service.PostService
+	hub   *realtimews.Hub
 }
 
 func NewHandler(auth *service.AuthService, posts *service.PostService) *Handler {
+	hub := realtimews.NewHub()
+	go hub.Run()
+
 	return &Handler{
 		auth:  auth,
 		posts: posts,
+		hub:   hub,
 	}
 }
 
@@ -30,6 +36,7 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/login", h.handleLogin)
 	apiMux.HandleFunc("/api/logout", h.handleLogout)
 	apiMux.HandleFunc("/api/me", h.handleMe)
+	apiMux.HandleFunc("/api/users", h.handleUsers)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)
 	apiMux.HandleFunc("/api/posts", h.handlePosts)
 	apiMux.HandleFunc("/api/posts/", h.handlePostsSubroutes)
