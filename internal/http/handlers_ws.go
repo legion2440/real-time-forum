@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 
 	realtimews "forum/internal/realtime/ws"
 )
@@ -23,9 +24,14 @@ func (h *Handler) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	name := strings.TrimSpace(user.DisplayName)
+	if name == "" {
+		name = strings.TrimSpace(user.Username)
+	}
+
 	if err := realtimews.ServeWS(w, r, h.hub, h.pms, realtimews.User{
 		ID:   user.ID,
-		Name: user.Username,
+		Name: name,
 	}); err != nil {
 		return
 	}

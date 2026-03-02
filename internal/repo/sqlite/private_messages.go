@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"forum/internal/domain"
@@ -41,7 +42,7 @@ func (r *PrivateMessageRepo) SavePrivateMessage(ctx context.Context, fromID, toI
 
 func (r *PrivateMessageRepo) ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT pm.id, pm.from_user_id, u.username, pm.to_user_id, pm.body, pm.created_at
+        SELECT pm.id, pm.from_user_id, u.username, u.display_name, pm.to_user_id, pm.body, pm.created_at
         FROM private_messages pm
         JOIN users u ON u.id = pm.from_user_id
         WHERE (pm.from_user_id = ? AND pm.to_user_id = ?)
@@ -58,9 +59,11 @@ func (r *PrivateMessageRepo) ListConversationLast(ctx context.Context, userA, us
 	for rows.Next() {
 		var msg domain.PrivateMessage
 		var created int64
-		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.FromUsername, &msg.ToUserID, &msg.Body, &created); err != nil {
+		var fromDisplayName sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.FromUsername, &fromDisplayName, &msg.ToUserID, &msg.Body, &created); err != nil {
 			return nil, err
 		}
+		msg.FromDisplayName = strings.TrimSpace(fromDisplayName.String)
 		msg.CreatedAt = unixToTime(created)
 		messages = append(messages, msg)
 	}

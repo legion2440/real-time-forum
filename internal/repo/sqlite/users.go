@@ -166,7 +166,7 @@ func (r *UserRepo) List(ctx context.Context) ([]domain.User, error) {
 
 func (r *UserRepo) ListPublic(ctx context.Context) ([]domain.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, username
+        SELECT id, username, display_name
         FROM users
         ORDER BY id ASC
     `)
@@ -178,9 +178,11 @@ func (r *UserRepo) ListPublic(ctx context.Context) ([]domain.User, error) {
 	users := make([]domain.User, 0)
 	for rows.Next() {
 		var user domain.User
-		if err := rows.Scan(&user.ID, &user.Username); err != nil {
+		var displayName sql.NullString
+		if err := rows.Scan(&user.ID, &user.Username, &displayName); err != nil {
 			return nil, err
 		}
+		user.DisplayName = strings.TrimSpace(displayName.String)
 		users = append(users, user)
 	}
 

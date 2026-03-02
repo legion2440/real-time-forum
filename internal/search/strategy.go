@@ -31,7 +31,7 @@ func (LikePostSearchStrategy) Clause(q string) (string, []any) {
 		return "", nil
 	}
 	pattern := "%" + q + "%"
-	return `(p.title LIKE ? OR p.body LIKE ? OR u.username LIKE ?)`, []any{pattern, pattern, pattern}
+	return `(p.title LIKE ? OR p.body LIKE ? OR u.username LIKE ? OR IFNULL(u.display_name, '') LIKE ?)`, []any{pattern, pattern, pattern, pattern}
 }
 
 type LikeCommentSearchStrategy struct{}
@@ -42,7 +42,7 @@ func (LikeCommentSearchStrategy) Clause(q string) (string, []any) {
 		return "", nil
 	}
 	pattern := "%" + q + "%"
-	return `(c.body LIKE ? OR u.username LIKE ?)`, []any{pattern, pattern}
+	return `(c.body LIKE ? OR u.username LIKE ? OR IFNULL(u.display_name, '') LIKE ?)`, []any{pattern, pattern, pattern}
 }
 
 // TODO: add FTSPostSearchStrategy / HeuristicPostSearchStrategy without changing handlers/services.

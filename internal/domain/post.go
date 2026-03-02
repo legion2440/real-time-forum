@@ -3,8 +3,9 @@ package domain
 import "time"
 
 type UserRef struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type Post struct {

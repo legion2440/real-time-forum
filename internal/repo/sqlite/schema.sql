@@ -8,10 +8,6 @@ CREATE TABLE IF NOT EXISTS users (
   profile_initialized INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name_nocase
-  ON users(display_name COLLATE NOCASE)
-  WHERE display_name IS NOT NULL AND display_name <> '';
-
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,

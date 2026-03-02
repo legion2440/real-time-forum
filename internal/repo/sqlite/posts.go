@@ -87,7 +87,7 @@ func (r *PostRepo) Exists(ctx context.Context, id int64) (bool, error) {
 
 func (r *PostRepo) GetByID(ctx context.Context, id int64) (*domain.Post, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT p.id, p.user_id, u.username, p.title, p.body, p.created_at,
+		SELECT p.id, p.user_id, u.username, u.display_name, p.title, p.body, p.created_at,
 		       COALESCE(SUM(CASE WHEN pr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN pr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
 		       (SELECT COUNT(1) FROM comments c WHERE c.post_id = p.id) AS comments_count
@@ -95,19 +95,24 @@ func (r *PostRepo) GetByID(ctx context.Context, id int64) (*domain.Post, error) 
 		JOIN users u ON u.id = p.user_id
 		LEFT JOIN post_reactions pr ON pr.post_id = p.id
 		WHERE p.id = ?
-		GROUP BY p.id, p.user_id, u.username, p.title, p.body, p.created_at
+		GROUP BY p.id, p.user_id, u.username, u.display_name, p.title, p.body, p.created_at
 	`, id)
 
 	var post domain.Post
 	var created int64
 	var authorUsername string
-	if err := row.Scan(&post.ID, &post.UserID, &authorUsername, &post.Title, &post.Body, &created, &post.Likes, &post.Dislikes, &post.CommentsCount); err != nil {
+	var authorDisplayName sql.NullString
+	if err := row.Scan(&post.ID, &post.UserID, &authorUsername, &authorDisplayName, &post.Title, &post.Body, &created, &post.Likes, &post.Dislikes, &post.CommentsCount); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
 		return nil, err
 	}
-	post.Author = domain.UserRef{ID: post.UserID, Username: authorUsername}
+	post.Author = domain.UserRef{
+		ID:          post.UserID,
+		Username:    authorUsername,
+		DisplayName: strings.TrimSpace(authorDisplayName.String),
+	}
 	post.CreatedAt = unixToTime(created)
 
 	categories, err := r.fetchCategories(ctx, []int64{post.ID})
@@ -124,7 +129,7 @@ func (r *PostRepo) List(ctx context.Context, filter domain.PostFilter) ([]domain
 	var args []any
 
 	sb.WriteString(`
-		SELECT p.id, p.user_id, u.username, p.title, p.body, p.created_at,
+		SELECT p.id, p.user_id, u.username, u.display_name, p.title, p.body, p.created_at,
 		       COALESCE(SUM(CASE WHEN pr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN pr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
 		       (SELECT COUNT(1) FROM comments c WHERE c.post_id = p.id) AS comments_count
@@ -161,7 +166,7 @@ func (r *PostRepo) List(ctx context.Context, filter domain.PostFilter) ([]domain
 		}
 	}
 
-	sb.WriteString(" GROUP BY p.id, p.user_id, u.username, p.title, p.body, p.created_at ORDER BY p.created_at DESC")
+	sb.WriteString(" GROUP BY p.id, p.user_id, u.username, u.display_name, p.title, p.body, p.created_at ORDER BY p.created_at DESC")
 
 	rows, err := r.db.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
@@ -175,10 +180,15 @@ func (r *PostRepo) List(ctx context.Context, filter domain.PostFilter) ([]domain
 		var p domain.Post
 		var created int64
 		var authorUsername string
-		if err := rows.Scan(&p.ID, &p.UserID, &authorUsername, &p.Title, &p.Body, &created, &p.Likes, &p.Dislikes, &p.CommentsCount); err != nil {
+		var authorDisplayName sql.NullString
+		if err := rows.Scan(&p.ID, &p.UserID, &authorUsername, &authorDisplayName, &p.Title, &p.Body, &created, &p.Likes, &p.Dislikes, &p.CommentsCount); err != nil {
 			return nil, err
 		}
-		p.Author = domain.UserRef{ID: p.UserID, Username: authorUsername}
+		p.Author = domain.UserRef{
+			ID:          p.UserID,
+			Username:    authorUsername,
+			DisplayName: strings.TrimSpace(authorDisplayName.String),
+		}
 		p.CreatedAt = unixToTime(created)
 		posts = append(posts, p)
 		ids = append(ids, p.ID)

@@ -76,11 +76,15 @@ func (h *Handler) handleDMConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func newPrivateMessageDTO(msg domain.PrivateMessage) privateMessageDTO {
+	name := strings.TrimSpace(msg.FromDisplayName)
+	if name == "" {
+		name = strings.TrimSpace(msg.FromUsername)
+	}
 	return privateMessageDTO{
 		ID: strconv.FormatInt(msg.ID, 10),
 		From: privateMessageUserDTO{
 			ID:   strconv.FormatInt(msg.FromUserID, 10),
-			Name: msg.FromUsername,
+			Name: name,
 		},
 		To: privateMessageUserDTO{
 			ID: strconv.FormatInt(msg.ToUserID, 10),

@@ -49,7 +49,7 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 	var sb strings.Builder
 	args := []any{postID}
 	sb.WriteString(`
-		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, c.body, c.created_at,
+		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at,
 		       COALESCE(SUM(CASE WHEN cr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN cr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes
 		FROM comments c
@@ -65,7 +65,7 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 		}
 	}
 	sb.WriteString(`
-		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, c.body, c.created_at
+		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at
 		ORDER BY c.created_at ASC
 	`)
 
@@ -81,13 +81,18 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 		var created int64
 		var parentID sql.NullInt64
 		var authorUsername string
-		if err := rows.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &c.Body, &created, &c.Likes, &c.Dislikes); err != nil {
+		var authorDisplayName sql.NullString
+		if err := rows.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &authorDisplayName, &c.Body, &created, &c.Likes, &c.Dislikes); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
 			c.ParentID = &parentID.Int64
 		}
-		c.Author = domain.UserRef{ID: c.UserID, Username: authorUsername}
+		c.Author = domain.UserRef{
+			ID:          c.UserID,
+			Username:    authorUsername,
+			DisplayName: strings.TrimSpace(authorDisplayName.String),
+		}
 		c.CreatedAt = unixToTime(created)
 		out = append(out, c)
 	}
@@ -99,21 +104,22 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 
 func (r *CommentRepo) GetByID(ctx context.Context, id int64) (*domain.Comment, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, c.body, c.created_at,
+		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at,
 		       COALESCE(SUM(CASE WHEN cr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN cr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes
 		FROM comments c
 		JOIN users u ON u.id = c.user_id
 		LEFT JOIN comment_reactions cr ON cr.comment_id = c.id
 		WHERE c.id = ?
-		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, c.body, c.created_at
+		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at
 	`, id)
 
 	var c domain.Comment
 	var created int64
 	var parentID sql.NullInt64
 	var authorUsername string
-	if err := row.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &c.Body, &created, &c.Likes, &c.Dislikes); err != nil {
+	var authorDisplayName sql.NullString
+	if err := row.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &authorDisplayName, &c.Body, &created, &c.Likes, &c.Dislikes); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
@@ -122,7 +128,11 @@ func (r *CommentRepo) GetByID(ctx context.Context, id int64) (*domain.Comment, e
 	if parentID.Valid {
 		c.ParentID = &parentID.Int64
 	}
-	c.Author = domain.UserRef{ID: c.UserID, Username: authorUsername}
+	c.Author = domain.UserRef{
+		ID:          c.UserID,
+		Username:    authorUsername,
+		DisplayName: strings.TrimSpace(authorDisplayName.String),
+	}
 	c.CreatedAt = unixToTime(created)
 	return &c, nil
 }

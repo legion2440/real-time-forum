@@ -3,11 +3,13 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type userListItem struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
 }
 
 func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -28,9 +30,14 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]userListItem, 0, len(users))
 	for _, user := range users {
+		name := strings.TrimSpace(user.DisplayName)
+		if name == "" {
+			name = strings.TrimSpace(user.Username)
+		}
 		response = append(response, userListItem{
-			ID:   strconv.FormatInt(user.ID, 10),
-			Name: user.Username,
+			ID:       strconv.FormatInt(user.ID, 10),
+			Username: user.Username,
+			Name:     name,
 		})
 	}
 

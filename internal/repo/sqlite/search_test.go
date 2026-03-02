@@ -17,6 +17,12 @@ func TestPostRepo_SearchByTitleBodyAuthor(t *testing.T) {
 
 	aliceID := mustCreateUser(t, ctx, users, "alice@example.com", "AliceUser")
 	bobID := mustCreateUser(t, ctx, users, "bob@example.com", "BobUser")
+	if err := users.UpdateProfile(ctx, aliceID, stringPtr("Captain Alice"), true); err != nil {
+		t.Fatalf("set alice display name: %v", err)
+	}
+	if err := users.UpdateProfile(ctx, bobID, stringPtr("Builder Bob"), true); err != nil {
+		t.Fatalf("set bob display name: %v", err)
+	}
 
 	post1ID := mustCreatePost(t, ctx, posts, aliceID, "Alpha release", "General notes", time.Now().UTC().Add(-3*time.Hour))
 	post2ID := mustCreatePost(t, ctx, posts, aliceID, "Roadmap", "Contains HELM migration details", time.Now().UTC().Add(-2*time.Hour))
@@ -49,6 +55,9 @@ func TestPostRepo_SearchByTitleBodyAuthor(t *testing.T) {
 		if p.Author.Username != "AliceUser" {
 			t.Fatalf("expected author username AliceUser, got %+v", p.Author)
 		}
+		if p.Author.DisplayName != "Captain Alice" {
+			t.Fatalf("expected author display name Captain Alice, got %+v", p.Author)
+		}
 		if p.Author.ID != p.UserID {
 			t.Fatalf("expected author id %d, got %+v", p.UserID, p.Author)
 		}
@@ -62,11 +71,19 @@ func TestPostRepo_SearchByTitleBodyAuthor(t *testing.T) {
 		t.Fatalf("expected 2 posts for @author search, got %d", len(byAuthorTag))
 	}
 
+	byDisplayName, err := posts.List(ctx, domain.PostFilter{Query: "Captain"})
+	if err != nil {
+		t.Fatalf("search by display name: %v", err)
+	}
+	if len(byDisplayName) != 2 {
+		t.Fatalf("expected 2 posts for display name search, got %d", len(byDisplayName))
+	}
+
 	got, err := posts.GetByID(ctx, post1ID)
 	if err != nil {
 		t.Fatalf("get post by id: %v", err)
 	}
-	if got.Author.Username != "AliceUser" || got.Author.ID != aliceID {
+	if got.Author.Username != "AliceUser" || got.Author.DisplayName != "Captain Alice" || got.Author.ID != aliceID {
 		t.Fatalf("expected author object on get by id, got %+v", got.Author)
 	}
 }
@@ -81,6 +98,12 @@ func TestCommentRepo_SearchByBodyAuthor(t *testing.T) {
 
 	aliceID := mustCreateUser(t, ctx, users, "alice2@example.com", "alice_thread")
 	bobID := mustCreateUser(t, ctx, users, "bob2@example.com", "bob_thread")
+	if err := users.UpdateProfile(ctx, aliceID, stringPtr("Thread Alice"), true); err != nil {
+		t.Fatalf("set alice display name: %v", err)
+	}
+	if err := users.UpdateProfile(ctx, bobID, stringPtr("Thread Bob"), true); err != nil {
+		t.Fatalf("set bob display name: %v", err)
+	}
 	postID := mustCreatePost(t, ctx, posts, aliceID, "Thread host", "Body", time.Now().UTC())
 
 	comment1ID := mustCreateComment(t, ctx, comments, postID, nil, aliceID, "Need to check migration appendix", time.Now().UTC().Add(-2*time.Minute))
@@ -101,7 +124,7 @@ func TestCommentRepo_SearchByBodyAuthor(t *testing.T) {
 	if len(byAuthor) != 1 {
 		t.Fatalf("expected 1 comment for author search, got %d", len(byAuthor))
 	}
-	if byAuthor[0].Author.Username != "bob_thread" || byAuthor[0].Author.ID != bobID {
+	if byAuthor[0].Author.Username != "bob_thread" || byAuthor[0].Author.DisplayName != "Thread Bob" || byAuthor[0].Author.ID != bobID {
 		t.Fatalf("expected author object on comment search result, got %+v", byAuthor[0].Author)
 	}
 
@@ -113,13 +136,25 @@ func TestCommentRepo_SearchByBodyAuthor(t *testing.T) {
 		t.Fatalf("expected same comment for @author search, got %+v", byAuthorTag)
 	}
 
+	byDisplayName, err := comments.ListByPost(ctx, postID, domain.CommentFilter{Query: "Thread Bob"})
+	if err != nil {
+		t.Fatalf("comment search by display name: %v", err)
+	}
+	if len(byDisplayName) != 1 || byDisplayName[0].ID != byAuthor[0].ID {
+		t.Fatalf("expected same comment for display name search, got %+v", byDisplayName)
+	}
+
 	got, err := comments.GetByID(ctx, comment1ID)
 	if err != nil {
 		t.Fatalf("get comment by id: %v", err)
 	}
-	if got.Author.Username != "alice_thread" || got.Author.ID != aliceID {
+	if got.Author.Username != "alice_thread" || got.Author.DisplayName != "Thread Alice" || got.Author.ID != aliceID {
 		t.Fatalf("expected author object on comment get by id, got %+v", got.Author)
 	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func mustCreateUser(t *testing.T, ctx context.Context, users *UserRepo, email, username string) int64 {

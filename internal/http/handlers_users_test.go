@@ -70,11 +70,13 @@ func newAuthHandler(t *testing.T) (*Handler, func()) {
 	return NewHandler(auth, nil), func() { _ = db.Close() }
 }
 
-func mustRegisterUser(t *testing.T, auth *service.AuthService, email, username string) {
+func mustRegisterUser(t *testing.T, auth *service.AuthService, email, username string) int64 {
 	t.Helper()
-	if _, err := auth.Register(context.Background(), email, username, "secret"); err != nil {
+	user, err := auth.Register(context.Background(), email, username, "secret")
+	if err != nil {
 		t.Fatalf("register %s: %v", username, err)
 	}
+	return user.ID
 }
 
 func mustLoginUser(t *testing.T, auth *service.AuthService, email string) string {
@@ -93,7 +95,10 @@ func TestUsersReturnsOnlyPublicFields(t *testing.T) {
 	defer cleanup()
 
 	mustRegisterUser(t, h.auth, "first@example.com", "first")
-	mustRegisterUser(t, h.auth, "second@example.com", "second")
+	secondUserID := mustRegisterUser(t, h.auth, "second@example.com", "second")
+	if _, err := h.auth.UpdateMyProfile(context.Background(), secondUserID, "Visible Second", false); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
 	token := mustLoginUser(t, h.auth, "first@example.com")
 
 	handler := h.Routes(t.TempDir())
@@ -108,10 +113,10 @@ func TestUsersReturnsOnlyPublicFields(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `"id":"1"`) || !strings.Contains(body, `"name":"first"`) {
+	if !strings.Contains(body, `"id":"1"`) || !strings.Contains(body, `"name":"first"`) || !strings.Contains(body, `"username":"first"`) {
 		t.Fatalf("expected first user in body, got %q", body)
 	}
-	if !strings.Contains(body, `"id":"2"`) || !strings.Contains(body, `"name":"second"`) {
+	if !strings.Contains(body, `"id":"2"`) || !strings.Contains(body, `"name":"Visible Second"`) || !strings.Contains(body, `"username":"second"`) {
 		t.Fatalf("expected second user in body, got %q", body)
 	}
 	if strings.Contains(body, `"email"`) {

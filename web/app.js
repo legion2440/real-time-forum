@@ -73,8 +73,18 @@ function maybeRedirectToProfileSetup() {
   return true;
 }
 
+function getDisplayName(value) {
+  if (!value || typeof value !== "object") return "";
+  const candidates = [value.displayName, value.display_name, value.name];
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
 function getDisplayNameOrUsername(profile) {
-  const displayName = String(profile && profile.displayName ? profile.displayName : "").trim();
+  const displayName = getDisplayName(profile);
   const username = normalizeUsername(profile && profile.username);
   return displayName || username || "user";
 }
@@ -84,10 +94,15 @@ function getUserByID(userID) {
   return (state.users || []).find((user) => normalizeUserID(user && user.id) === id) || null;
 }
 
+function getUserUsername(userID) {
+  const user = getUserByID(userID);
+  return normalizeUsername(user && user.username);
+}
+
 function getUserDisplayName(userID) {
   const user = getUserByID(userID);
   if (!user) return `user-${normalizeUserID(userID)}`;
-  return String(user.name || "").trim() || `user-${normalizeUserID(userID)}`;
+  return getDisplayNameOrUsername(user);
 }
 
 function getActiveDMPeerIDFromPath(pathname = location.pathname) {
@@ -414,8 +429,15 @@ function getAuthorUsername(entity) {
 }
 
 function getAuthorDisplay(entity) {
+  const author = entity && entity.author;
+  if (author && typeof author === "object") {
+    return getDisplayNameOrUsername(author);
+  }
+  if (entity && entity.user_id != null) {
+    return getUserDisplayName(entity.user_id);
+  }
   const username = getAuthorUsername(entity);
-  return username ? `@${username}` : "@user";
+  return username || "user";
 }
 
 function handleSessionEndedUX(message) {
@@ -492,7 +514,7 @@ function renderHeader() {
   const activePostID = getActivePostIDFromPath();
   const isPostSearch = Boolean(activePostID);
   const headerSearchValue = isPostSearch ? String(state.commentSearchByPost[String(activePostID)] || "") : String(state.filters.q || "");
-  const headerSearchPlaceholder = isPostSearch ? "Search comments or @author..." : "Search posts, content, @author...";
+  const headerSearchPlaceholder = isPostSearch ? "Search comments or author..." : "Search posts, content or author...";
   return `
     <header class="app-header">
       <a class="brand header-brand" data-link data-action="open-home-feed" href="/">
@@ -516,9 +538,15 @@ function renderHeader() {
         ${
           user
             ? `
-              <button class="user-chip" type="button">
-                ${avatarMarkup(user.username, user.avatarUrl, "sm")}
-                <span>${escapeHTML(user.username)}</span>
+              <button
+                class="user-chip"
+                type="button"
+                data-action="open-profile"
+                data-username="${escapeHTML(user.username)}"
+                aria-label="Open your profile"
+              >
+                ${avatarMarkup(getDisplayNameOrUsername(user), user.avatarUrl, "sm")}
+                <span>${escapeHTML(getDisplayNameOrUsername(user))}</span>
               </button>
               <button class="icon-btn icon-btn-plain logout-btn" type="button" data-action="logout" aria-label="Logout">${icon("logout")}</button>
             `
@@ -629,7 +657,7 @@ function renderDMViewContent() {
     <div class="section-row">
       <h2>Direct Messages</h2>
       <div class="form-actions">
-        <span class="side-note">@${escapeHTML(peerName)}</span>
+        <span class="side-note">${escapeHTML(peerName)}</span>
         <button class="btn btn-ghost btn-compact" type="button" data-action="dm-close">Close</button>
       </div>
     </div>
@@ -749,7 +777,8 @@ function renderPresenceUsers(users, emptyLabel) {
   return users
     .map((user) => {
       const id = normalizeUserID(user && user.id);
-      const name = String(user?.name ?? "").trim() || `user-${id}`;
+      const username = normalizeUsername(user && user.username);
+      const name = getDisplayNameOrUsername(user) || `user-${id}`;
       const unread = Number(state.dmUnreadByPeer[id] || 0);
       if (!id) return "";
       return `
@@ -758,7 +787,7 @@ function renderPresenceUsers(users, emptyLabel) {
             class="side-filter-btn presence-user-name"
             type="button"
             data-action="open-profile"
-            data-username="${escapeHTML(name)}"
+            data-username="${escapeHTML(username)}"
           >${escapeHTML(name)}${id === getCurrentUserID() ? " (you)" : ""}</button>
           ${
             id === getCurrentUserID()
@@ -805,7 +834,7 @@ function renderPostCard(post) {
       <div class="post-card-main">
         <h3 class="post-card-title"><a data-link href="/post/${post.id}">${escapeHTML(post.title)}</a></h3>
         <div class="author-line">
-          ${avatarMarkup(authorUsername, post.avatarUrl, "sm")}
+          ${avatarMarkup(author, post.avatarUrl, "sm")}
           <div class="author-meta">
             <div class="author-meta-row">
               <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
@@ -1110,9 +1139,10 @@ async function ensureUser(force = false) {
   }
 
   const currentUserID = normalizeUserID(state.user && state.user.id);
-  if (!state.usersLoaded || previousUserID !== currentUserID) {
-    await ensureUsersLoaded(previousUserID !== currentUserID);
+  if (force || !state.usersLoaded || previousUserID !== currentUserID) {
+    await ensureUsersLoaded(force || previousUserID !== currentUserID);
   }
+  if (force) closeRealtimeSocket();
   ensureRealtimeSocket();
 }
 
@@ -1132,6 +1162,7 @@ async function ensureUsersLoaded(force = false) {
       ? users
           .map((user) => ({
             id: normalizeUserID(user && user.id),
+            username: normalizeUsername(user && user.username),
             name: String(user && user.name ? user.name : "").trim(),
           }))
           .filter((user) => user.id)
@@ -1731,7 +1762,7 @@ function renderComment(comment, { isReply = false } = {}) {
   return `
     <article class="surface comment-card${isReply ? " is-reply" : ""}">
       <div class="author-line">
-        ${avatarMarkup(authorUsername, comment.avatarUrl, "xs")}
+        ${avatarMarkup(author, comment.avatarUrl, "xs")}
         <div>
           <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
           <div class="meta-line">${escapeHTML(formatDate(comment.created_at))}</div>
@@ -1827,7 +1858,7 @@ async function postView(params) {
             <div class="hero-main-content">
               <h1 class="hero-title">${escapeHTML(post.title)}</h1>
               <div class="author-line">
-                ${avatarMarkup(authorUsername, post.avatarUrl, "sm")}
+                ${avatarMarkup(author, post.avatarUrl, "sm")}
                 <div class="author-meta">
                   <div class="author-meta-row">
                     <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
