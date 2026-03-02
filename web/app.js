@@ -41,8 +41,42 @@ function normalizeUserID(value) {
   return String(value ?? "").trim();
 }
 
+function normalizeUsername(value) {
+  return String(value ?? "").trim().replace(/^@+/, "");
+}
+
 function getCurrentUserID() {
   return normalizeUserID(state.user && state.user.id);
+}
+
+function getCurrentUsername() {
+  return normalizeUsername(state.user && state.user.username);
+}
+
+function getProfilePath(username) {
+  const normalized = normalizeUsername(username);
+  return normalized ? `/u/${encodeURIComponent(normalized)}` : "/";
+}
+
+function getProfileSetupPath() {
+  if (!state.user || !state.user.needsProfileSetup) return "";
+  const username = getCurrentUsername();
+  return username ? `${getProfilePath(username)}?setup=1` : "";
+}
+
+function maybeRedirectToProfileSetup() {
+  const target = getProfileSetupPath();
+  if (!target) return false;
+  const current = `${location.pathname || "/"}${location.search || ""}`;
+  if (current === target) return false;
+  navigate(target);
+  return true;
+}
+
+function getDisplayNameOrUsername(profile) {
+  const displayName = String(profile && profile.displayName ? profile.displayName : "").trim();
+  const username = normalizeUsername(profile && profile.username);
+  return displayName || username || "user";
 }
 
 function getUserByID(userID) {
@@ -59,6 +93,11 @@ function getUserDisplayName(userID) {
 function getActiveDMPeerIDFromPath(pathname = location.pathname) {
   const match = String(pathname || "").match(/^\/dm\/([^/?#]+)/);
   return match ? normalizeUserID(match[1]) : "";
+}
+
+function getActiveProfileUsernameFromPath(pathname = location.pathname) {
+  const match = String(pathname || "").match(/^\/u\/([^/?#]+)/);
+  return match ? normalizeUsername(decodeURIComponent(match[1])) : "";
 }
 
 function isDMRoute(pathname = location.pathname) {
@@ -713,16 +752,27 @@ function renderPresenceUsers(users, emptyLabel) {
       const name = String(user?.name ?? "").trim() || `user-${id}`;
       const unread = Number(state.dmUnreadByPeer[id] || 0);
       if (!id) return "";
-      if (id === getCurrentUserID()) {
-        return `<span class="side-tag">${escapeHTML(name)} (you)</span>`;
-      }
       return `
-        <button
-          class="side-filter-btn ${state.dmPeerID === id ? "is-active" : ""}"
-          type="button"
-          data-action="dm-open"
-          data-dm-open="${escapeHTML(id)}"
-        >${escapeHTML(name)}${unread > 0 ? ` (${unread})` : ""}</button>
+        <div class="presence-user-row">
+          <button
+            class="side-filter-btn presence-user-name"
+            type="button"
+            data-action="open-profile"
+            data-username="${escapeHTML(name)}"
+          >${escapeHTML(name)}${id === getCurrentUserID() ? " (you)" : ""}</button>
+          ${
+            id === getCurrentUserID()
+              ? ""
+              : `
+                <button
+                  class="side-filter-btn presence-user-dm ${state.dmPeerID === id ? "is-active" : ""}"
+                  type="button"
+                  data-action="dm-open"
+                  data-dm-open="${escapeHTML(id)}"
+                >DM${unread > 0 ? ` (${unread})` : ""}</button>
+              `
+          }
+        </div>
       `;
     })
     .join("");
@@ -758,7 +808,7 @@ function renderPostCard(post) {
           ${avatarMarkup(authorUsername, post.avatarUrl, "sm")}
           <div class="author-meta">
             <div class="author-meta-row">
-              <span class="author-name">${escapeHTML(author)}</span>
+              <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
               ${
                 categoriesMarkup
                   ? `
@@ -1149,6 +1199,10 @@ function closeDMConversation() {
   navigate(target);
 }
 
+async function loadPublicProfile(username) {
+  return apiFetch(`/api/u/${encodeURIComponent(normalizeUsername(username))}`);
+}
+
 function sendDMMessage(body) {
   const peerID = normalizeUserID(state.dmPeerID);
   if (!peerID) {
@@ -1335,6 +1389,148 @@ async function dmView(params) {
   };
 }
 
+async function profileView(params) {
+  await ensureUser(true);
+  if (state.user) {
+    await ensureUsersLoaded();
+  }
+
+  const routeUsername = normalizeUsername(decodeURIComponent((params && params.username) || ""));
+  if (!routeUsername) {
+    return {
+      html: renderLayout({
+        mode: "profile",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Profile</h2><p>User not found.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  let profile;
+  try {
+    profile = await loadPublicProfile(routeUsername);
+  } catch (err) {
+    if (err && err.status === 404) {
+      return {
+        html: renderLayout({
+          mode: "profile",
+          hideHeading: true,
+          content: `<section class="surface form-card"><h2>Profile</h2><p>User not found.</p></section>`,
+        }),
+        onMount: bindHeaderActions,
+      };
+    }
+    throw err;
+  }
+
+  const isSelf = Boolean(state.user) && normalizeUsername(profile && profile.username).toLowerCase() === getCurrentUsername().toLowerCase();
+  const setupMode = isSelf && state.user && state.user.needsProfileSetup && new URLSearchParams(location.search).get("setup") === "1";
+  const heading = getDisplayNameOrUsername(profile);
+  const subtitle = `@${normalizeUsername(profile && profile.username) || routeUsername}`;
+  const selfDisplayName = isSelf ? String(state.user && state.user.displayName ? state.user.displayName : "").trim() : String(profile && profile.displayName ? profile.displayName : "").trim();
+
+  const content = `
+    <section class="page-head">
+      <div>
+        <h1>${escapeHTML(heading)}</h1>
+        <p class="profile-handle">${escapeHTML(subtitle)}</p>
+      </div>
+    </section>
+    <section class="surface form-card profile-card">
+      <div class="section-row">
+        <h2>${isSelf ? "Your profile" : "Profile"}</h2>
+        <p>${isSelf ? "Display name is optional. Username stays unchanged." : "Public profile."}</p>
+      </div>
+      ${setupMode ? renderNotice("Complete your profile setup now or skip. You can update your display name later.") : ""}
+      ${
+        isSelf
+          ? `
+            <form id="profile-form" class="form-stack">
+              <label class="field">
+                <span>Display name</span>
+                <input type="text" name="displayName" maxlength="64" value="${escapeHTML(selfDisplayName)}" placeholder="Leave blank to use your username" />
+              </label>
+              <div class="side-note">Username: ${escapeHTML(subtitle)}</div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit">Save</button>
+                ${setupMode ? `<button class="btn btn-ghost" type="button" data-action="profile-skip">Skip</button>` : ""}
+              </div>
+              <div id="profile-error"></div>
+            </form>
+          `
+          : `
+            <div class="profile-readonly">
+              <div class="profile-field-row">
+                <span class="profile-field-label">Display name</span>
+                <strong>${escapeHTML(getDisplayNameOrUsername(profile))}</strong>
+              </div>
+              <div class="profile-field-row">
+                <span class="profile-field-label">Username</span>
+                <strong>${escapeHTML(subtitle)}</strong>
+              </div>
+            </div>
+          `
+      }
+    </section>
+  `;
+
+  return {
+    html: renderLayout({ mode: "profile", hideHeading: true, content }),
+    onMount: () => {
+      bindHeaderActions();
+      syncPresencePanel();
+
+      if (!isSelf) return;
+
+      const form = document.getElementById("profile-form");
+      if (form) {
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const errorBox = document.getElementById("profile-error");
+          if (errorBox) errorBox.innerHTML = "";
+
+          const data = new FormData(form);
+          try {
+            await apiFetch("/api/me/profile", {
+              method: "PUT",
+              body: JSON.stringify({ displayName: data.get("displayName") }),
+            });
+            await ensureUser(true);
+            navigate(getProfilePath(state.user && state.user.username));
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) {
+              errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to update profile.");
+            }
+          }
+        });
+      }
+
+      const skipButton = document.querySelector("[data-action='profile-skip']");
+      if (skipButton) {
+        skipButton.addEventListener("click", async () => {
+          const errorBox = document.getElementById("profile-error");
+          if (errorBox) errorBox.innerHTML = "";
+          try {
+            await apiFetch("/api/me/profile", {
+              method: "PUT",
+              body: JSON.stringify({ skip: true }),
+            });
+            await ensureUser(true);
+            navigate(getProfilePath(state.user && state.user.username));
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) {
+              errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to update profile.");
+            }
+          }
+        });
+      }
+    },
+  };
+}
+
 function renderAuthLayout(kind) {
   const isLogin = kind === "login";
   const content = `
@@ -1353,12 +1549,12 @@ function renderAuthLayout(kind) {
         <form id="${kind}-form" class="form-stack">
           <div class="form-intro">
             <h2>${isLogin ? "Login" : "Register"}</h2>
-            <p>${isLogin ? "Use your email and password." : "Email, username and password are required."}</p>
+            <p>${isLogin ? "Use your email or username and password." : "Email, username and password are required."}</p>
           </div>
           ${
             isLogin
               ? `
-                <label class="field"><span>Email</span><input type="email" name="email" required /></label>
+                <label class="field"><span>Email or username</span><input type="text" name="login" required /></label>
                 <label class="field"><span>Password</span><input type="password" name="password" required /></label>
               `
               : `
@@ -1392,13 +1588,15 @@ async function loginView() {
           await apiFetch("/api/login", {
             method: "POST",
             body: JSON.stringify({
-              email: data.get("email"),
+              login: data.get("login"),
               password: data.get("password"),
             }),
           });
           await ensureUser(true);
           ensureRealtimeSocket();
-          navigate("/");
+          if (!maybeRedirectToProfileSetup()) {
+            navigate("/");
+          }
         } catch (err) {
           if (err && err.handled) return;
           document.getElementById("login-error").innerHTML = renderNotice(err.message);
@@ -1430,7 +1628,9 @@ async function registerView() {
           });
           await ensureUser(true);
           ensureRealtimeSocket();
-          navigate("/");
+          if (!maybeRedirectToProfileSetup()) {
+            navigate("/");
+          }
         } catch (err) {
           if (err && err.handled) return;
           document.getElementById("register-error").innerHTML = renderNotice(err.message);
@@ -1533,7 +1733,7 @@ function renderComment(comment, { isReply = false } = {}) {
       <div class="author-line">
         ${avatarMarkup(authorUsername, comment.avatarUrl, "xs")}
         <div>
-          <div class="author-name">${escapeHTML(author)}</div>
+          <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
           <div class="meta-line">${escapeHTML(formatDate(comment.created_at))}</div>
         </div>
       </div>
@@ -1630,7 +1830,7 @@ async function postView(params) {
                 ${avatarMarkup(authorUsername, post.avatarUrl, "sm")}
                 <div class="author-meta">
                   <div class="author-meta-row">
-                    <span class="author-name">${escapeHTML(author)}</span>
+                    <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
                     ${
                       categoriesMarkup
                         ? `
@@ -1747,6 +1947,7 @@ const routes = [
   { path: "/login", view: loginView },
   { path: "/register", view: registerView },
   { path: "/dm/:peer", view: dmView },
+  { path: "/u/:username", view: profileView },
   { path: "/new", view: newPostView },
   { path: "/post/:id", view: postView },
 ];
@@ -1774,6 +1975,7 @@ function matchRoute(pathname) {
 
 async function router() {
   applyTheme(state.theme);
+  if (state.user && maybeRedirectToProfileSetup()) return;
   const match = matchRoute(location.pathname) || { route: routes[0], params: {} };
   const activePeerID = getActiveDMPeerIDFromPath(location.pathname);
   if (!activePeerID) {
@@ -1800,6 +2002,13 @@ async function router() {
 window.addEventListener("popstate", router);
 
 document.addEventListener("click", (e) => {
+  const openProfile = e.target.closest("[data-action='open-profile']");
+  if (openProfile) {
+    e.preventDefault();
+    navigate(getProfilePath(openProfile.getAttribute("data-username")));
+    return;
+  }
+
   const dmOpen = e.target.closest("[data-action='dm-open']");
   if (dmOpen) {
     e.preventDefault();
@@ -1894,6 +2103,7 @@ document.addEventListener("submit", (e) => {
 
 (async () => {
   await ensureUser(true);
+  if (maybeRedirectToProfileSetup()) return;
   ensureRealtimeSocket();
   router();
 })();

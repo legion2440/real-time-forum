@@ -56,3 +56,27 @@ func TestSPAFallbackServesIndexForPostRoute(t *testing.T) {
 		t.Fatalf("expected body to contain index marker %q, got %q", marker, rec.Body.String())
 	}
 }
+
+func TestSPAFallbackServesIndexForProfileRoute(t *testing.T) {
+	webDir := t.TempDir()
+	marker := "profile-index-marker"
+
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+
+	h := NewHandler(nil, nil)
+	handler := h.Routes(webDir)
+
+	req := httptest.NewRequest(http.MethodGet, "/u/any", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), marker) {
+		t.Fatalf("expected body to contain index marker %q, got %q", marker, rec.Body.String())
+	}
+}

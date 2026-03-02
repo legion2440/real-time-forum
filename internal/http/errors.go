@@ -22,6 +22,8 @@ func handleServiceError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusConflict, "this e-mail already registered")
 	case errors.Is(err, service.ErrUsernameTaken):
 		writeError(w, http.StatusConflict, "this username already registered")
+	case errors.Is(err, service.ErrDisplayNameTaken):
+		writeError(w, http.StatusBadRequest, "display name already taken")
 	case errors.Is(err, service.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict")
 	default:

@@ -585,6 +585,23 @@ textarea {
   gap: 8px;
 }
 
+.presence-user-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.presence-user-name {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.presence-user-dm {
+  flex: none;
+}
+
 .side-tag {
   display: inline-flex;
   align-items: center;
@@ -826,6 +843,10 @@ textarea {
 .author-name {
   font-weight: 700;
   line-height: 1.2;
+}
+
+.author-link:hover {
+  color: var(--primary);
 }
 
 .meta-sep {
@@ -1265,6 +1286,39 @@ textarea {
   word-break: break-word;
 }
 
+.profile-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.profile-handle {
+  color: var(--text-muted);
+}
+
+.profile-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.profile-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.profile-field-label {
+  color: var(--text-soft);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .dm-thread {
   display: flex;
   flex-direction: column;
@@ -1517,6 +1571,11 @@ textarea {
   }
 
   .section-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .profile-field-row {
     align-items: flex-start;
     flex-direction: column;
   }

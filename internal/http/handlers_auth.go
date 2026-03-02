@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 type registerRequest struct {
@@ -12,6 +13,7 @@ type registerRequest struct {
 }
 
 type loginRequest struct {
+	Login    string `json:"login"`
 	Email    string `json:"email"`
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -49,7 +51,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, user, err := h.auth.Login(r.Context(), req.Email, req.Username, req.Password)
+	loginIdentifier := strings.TrimSpace(req.Login)
+	if loginIdentifier == "" {
+		loginIdentifier = strings.TrimSpace(req.Email)
+	}
+
+	session, user, err := h.auth.Login(r.Context(), loginIdentifier, req.Username, req.Password)
 	if handleServiceError(w, err) {
 		return
 	}
@@ -95,5 +102,5 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, newMeResponse(*user))
 }

@@ -2,9 +2,15 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE,
   username TEXT NOT NULL UNIQUE,
+  display_name TEXT,
   pass_hash TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  profile_initialized INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name_nocase
+  ON users(display_name COLLATE NOCASE)
+  WHERE display_name IS NOT NULL AND display_name <> '';
 
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,

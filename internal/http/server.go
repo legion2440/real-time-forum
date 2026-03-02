@@ -42,7 +42,9 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/register", h.handleRegister)
 	apiMux.HandleFunc("/api/login", h.handleLogin)
 	apiMux.HandleFunc("/api/logout", h.handleLogout)
+	apiMux.HandleFunc("/api/me/profile", h.handleMyProfile)
 	apiMux.HandleFunc("/api/me", h.handleMe)
+	apiMux.HandleFunc("/api/u/", h.handlePublicProfile)
 	apiMux.HandleFunc("/api/users", h.handleUsers)
 	apiMux.HandleFunc("/api/dm/", h.handleDMConversation)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)
@@ -102,7 +104,7 @@ func spaHandler(webDir string) http.Handler {
 func isKnownSPARoute(reqPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimPrefix(reqPath, "/"))
 	switch cleanPath {
-	case "/", "/login", "/register", "/new", "/dm":
+	case "/", "/login", "/register", "/new", "/dm", "/u":
 		return true
 	}
 	if strings.HasPrefix(cleanPath, "/post/") {
@@ -111,6 +113,10 @@ func isKnownSPARoute(reqPath string) bool {
 	}
 	if strings.HasPrefix(cleanPath, "/dm/") {
 		rest := strings.TrimPrefix(cleanPath, "/dm/")
+		return rest != "" && !strings.Contains(rest, "/")
+	}
+	if strings.HasPrefix(cleanPath, "/u/") {
+		rest := strings.TrimPrefix(cleanPath, "/u/")
 		return rest != "" && !strings.Contains(rest, "/")
 	}
 	return false

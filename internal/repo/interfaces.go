@@ -11,7 +11,11 @@ type UserRepo interface {
 	Create(ctx context.Context, user *domain.User) (int64, error)
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByUsername(ctx context.Context, username string) (*domain.User, error)
+	GetByUsernameCI(ctx context.Context, username string) (*domain.User, error)
 	GetByID(ctx context.Context, id int64) (*domain.User, error)
+	GetByDisplayNameCI(ctx context.Context, displayName string) (*domain.User, error)
+	GetPublicByUsername(ctx context.Context, username string) (*domain.User, error)
+	UpdateProfile(ctx context.Context, userID int64, displayName *string, profileInitialized bool) error
 	List(ctx context.Context) ([]domain.User, error)
 	ListPublic(ctx context.Context) ([]domain.User, error)
 }

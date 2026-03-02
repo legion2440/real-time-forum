@@ -47,6 +47,18 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureUserDisplayNameColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureUserProfileInitializedColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureUserDisplayNameIndex(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	if err := seedCategories(context.Background(), db, defaultCategories); err != nil {
 		_ = db.Close()
@@ -66,9 +78,57 @@ func applySchema(db *sql.DB) error {
 }
 
 func ensureCommentParentColumn(db *sql.DB) error {
-	rows, err := db.Query("PRAGMA table_info(comments)")
+	hasColumn, err := tableHasColumn(db, "comments", "parent_id")
 	if err != nil {
 		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
+	return err
+}
+
+func ensureUserDisplayNameColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "display_name")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE users ADD COLUMN display_name TEXT")
+	return err
+}
+
+func ensureUserProfileInitializedColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "profile_initialized")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE users ADD COLUMN profile_initialized INTEGER NOT NULL DEFAULT 0")
+	return err
+}
+
+func ensureUserDisplayNameIndex(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name_nocase
+		ON users(display_name COLLATE NOCASE)
+		WHERE display_name IS NOT NULL AND display_name <> ''
+	`)
+	return err
+}
+
+func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
+	if err != nil {
+		return false, err
 	}
 	defer rows.Close()
 
@@ -82,18 +142,14 @@ func ensureCommentParentColumn(db *sql.DB) error {
 	)
 	for rows.Next() {
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			return err
+			return false, err
 		}
-		if strings.EqualFold(name, "parent_id") {
-			return rows.Err()
+		if strings.EqualFold(name, columnName) {
+			return true, rows.Err()
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 
-	_, err = db.Exec("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
-	return err
+	return false, rows.Err()
 }
 
 func seedCategories(ctx context.Context, db *sql.DB, categories []string) error {
