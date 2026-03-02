@@ -23,7 +23,7 @@ func (h *Handler) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := realtimews.ServeWS(w, r, h.hub, realtimews.User{
+	if err := realtimews.ServeWS(w, r, h.hub, h.pms, realtimews.User{
 		ID:   user.ID,
 		Name: user.Username,
 	}); err != nil {

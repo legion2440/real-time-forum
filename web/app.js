@@ -1,11 +1,17 @@
 const app = document.getElementById("app");
 const THEME_KEY = "theme";
+const DEBUG_WS = false;
 
 const state = {
   user: null,
   users: [],
   usersLoaded: false,
   onlineUserIDs: new Set(),
+  dmPeerID: "",
+  dmMessages: [],
+  dmUnreadByPeer: {},
+  dmLoading: false,
+  dmReturnPath: "",
   categories: [],
   filters: {
     cat: new Set(),
@@ -23,8 +29,49 @@ let realtimeSocket = null;
 
 applyTheme(state.theme);
 
+function debugWS(...args) {
+  if (DEBUG_WS) console.log(...args);
+}
+
+function debugWSWarn(...args) {
+  if (DEBUG_WS) console.warn(...args);
+}
+
 function normalizeUserID(value) {
   return String(value ?? "").trim();
+}
+
+function getCurrentUserID() {
+  return normalizeUserID(state.user && state.user.id);
+}
+
+function getUserByID(userID) {
+  const id = normalizeUserID(userID);
+  return (state.users || []).find((user) => normalizeUserID(user && user.id) === id) || null;
+}
+
+function getUserDisplayName(userID) {
+  const user = getUserByID(userID);
+  if (!user) return `user-${normalizeUserID(userID)}`;
+  return String(user.name || "").trim() || `user-${normalizeUserID(userID)}`;
+}
+
+function getActiveDMPeerIDFromPath(pathname = location.pathname) {
+  const match = String(pathname || "").match(/^\/dm\/([^/?#]+)/);
+  return match ? normalizeUserID(match[1]) : "";
+}
+
+function isDMRoute(pathname = location.pathname) {
+  return Boolean(getActiveDMPeerIDFromPath(pathname));
+}
+
+function clearDMState() {
+  state.dmPeerID = "";
+  state.dmMessages = [];
+  state.dmUnreadByPeer = {};
+  state.dmLoading = false;
+  state.dmReturnPath = "";
+  syncDMView();
 }
 
 function clearPresenceState() {
@@ -38,6 +85,7 @@ function clearAuthenticatedState() {
   state.user = null;
   state.filters.mine = false;
   state.filters.liked = false;
+  clearDMState();
   clearPresenceState();
   closeRealtimeSocket();
 }
@@ -65,7 +113,7 @@ function ensureRealtimeSocket() {
 
   socket.onopen = () => {
     if (realtimeSocket !== socket) return;
-    console.log("ws connected");
+    debugWS("ws connected");
   };
 
   socket.onmessage = (event) => {
@@ -74,7 +122,7 @@ function ensureRealtimeSocket() {
       const payload = JSON.parse(event.data);
       handleRealtimeMessage(payload);
     } catch (err) {
-      console.warn("ws invalid message", err);
+      debugWSWarn("ws invalid message", err);
     }
   };
 
@@ -82,7 +130,7 @@ function ensureRealtimeSocket() {
     if (realtimeSocket === socket) {
       realtimeSocket = null;
     }
-    console.log("ws closed");
+    debugWS("ws closed");
   };
 }
 
@@ -523,6 +571,94 @@ function renderNotice(msg) {
   return `<div class="notice-box">${escapeHTML(msg)}</div>`;
 }
 
+function renderDMViewContent() {
+  if (!state.user) return "";
+
+  if (!state.dmPeerID) {
+    return `
+      <div class="section-row">
+        <h2>Direct Messages</h2>
+        <p>Select a user from Presence.</p>
+      </div>
+    `;
+  }
+
+  const peerName = getUserDisplayName(state.dmPeerID);
+  const messages = Array.isArray(state.dmMessages) ? state.dmMessages : [];
+
+  return `
+    <div class="section-row">
+      <h2>Direct Messages</h2>
+      <div class="form-actions">
+        <span class="side-note">@${escapeHTML(peerName)}</span>
+        <button class="btn btn-ghost btn-compact" type="button" data-action="dm-close">Close</button>
+      </div>
+    </div>
+    ${
+      state.dmLoading
+        ? `<div class="side-note">Loading conversation...</div>`
+        : `
+          <div class="dm-thread">
+            ${messages.length ? messages.map(renderDMMessage).join("") : `<div class="dm-thread-empty">${renderEmpty("No messages yet", "Start the conversation.")}</div>`}
+          </div>
+        `
+    }
+    <form id="dm-form" class="form-stack">
+      <label class="field">
+        <span>Message</span>
+        <textarea name="body" rows="3" required ${state.dmLoading ? "disabled" : ""}></textarea>
+      </label>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" ${state.dmLoading ? "disabled" : ""}>${icon("send")} Send</button>
+      </div>
+      <div id="dm-error"></div>
+    </form>
+  `;
+}
+
+function renderDMMessage(message) {
+  const isOutgoing = normalizeUserID(message?.from?.id) === getCurrentUserID();
+  const fromName = String(message?.from?.name || getUserDisplayName(message?.from?.id)).trim() || "user";
+  const directionClass = isOutgoing ? "dm-msg--outgoing" : "dm-msg--incoming";
+  return `
+    <div class="dm-msg ${directionClass}">
+      <div class="dm-msg-body">
+        <div class="dm-meta">${escapeHTML(fromName)} · ${escapeHTML(formatDate(message.createdAt))}</div>
+        <div class="dm-bubble">${escapeHTML(message.body)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function normalizeDMMessage(message) {
+  if (!message || typeof message !== "object") return null;
+  const id = normalizeUserID(message.id);
+  const fromID = normalizeUserID(message.from && message.from.id);
+  const toID = normalizeUserID(message.to && message.to.id);
+  const body = String(message.body || "").trim();
+  const createdAt = message.createdAt || message.created_at || "";
+  if (!id || !fromID || !toID || !body || !createdAt) return null;
+
+  return {
+    id,
+    from: {
+      id: fromID,
+      name: String((message.from && message.from.name) || "").trim(),
+    },
+    to: {
+      id: toID,
+    },
+    body,
+    createdAt,
+  };
+}
+
+function syncDMView() {
+  const panel = document.getElementById("dm-view");
+  if (!panel) return;
+  panel.innerHTML = renderDMViewContent();
+}
+
 function renderPresencePanel() {
   return `
     <div id="presence-panel" class="sidebar-block">
@@ -573,8 +709,21 @@ function renderPresenceUsers(users, emptyLabel) {
 
   return users
     .map((user) => {
-      const name = String(user?.name ?? "").trim() || `user-${normalizeUserID(user?.id)}`;
-      return `<span class="side-tag">${escapeHTML(name)}</span>`;
+      const id = normalizeUserID(user && user.id);
+      const name = String(user?.name ?? "").trim() || `user-${id}`;
+      const unread = Number(state.dmUnreadByPeer[id] || 0);
+      if (!id) return "";
+      if (id === getCurrentUserID()) {
+        return `<span class="side-tag">${escapeHTML(name)} (you)</span>`;
+      }
+      return `
+        <button
+          class="side-filter-btn ${state.dmPeerID === id ? "is-active" : ""}"
+          type="button"
+          data-action="dm-open"
+          data-dm-open="${escapeHTML(id)}"
+        >${escapeHTML(name)}${unread > 0 ? ` (${unread})` : ""}</button>
+      `;
     })
     .join("");
 }
@@ -946,8 +1095,84 @@ async function ensureUsersLoaded(force = false) {
   syncPresencePanel();
 }
 
+function isMessageForPeer(message, peerID) {
+  const me = getCurrentUserID();
+  const peer = normalizeUserID(peerID);
+  if (!me || !peer || !message) return false;
+
+  const fromID = normalizeUserID(message.from && message.from.id);
+  const toID = normalizeUserID(message.to && message.to.id);
+  return (fromID === me && toID === peer) || (fromID === peer && toID === me);
+}
+
+function appendDMMessage(message) {
+  const nextMessage = normalizeDMMessage(message);
+  if (!nextMessage) return;
+  if (state.dmMessages.some((entry) => normalizeUserID(entry && entry.id) === nextMessage.id)) {
+    return;
+  }
+  state.dmMessages = [...state.dmMessages, nextMessage];
+}
+
+async function loadDMConversation(peerID, limit = 10) {
+  const peer = normalizeUserID(peerID);
+  if (!state.user || !peer || peer === getCurrentUserID()) return;
+
+  state.dmLoading = true;
+  syncDMView();
+
+  try {
+    const messages = (await apiFetch(`/api/dm/${peer}?limit=${limit}`)) || [];
+    state.dmMessages = Array.isArray(messages) ? messages.map(normalizeDMMessage).filter(Boolean) : [];
+  } finally {
+    state.dmLoading = false;
+    syncDMView();
+  }
+}
+
+function openDM(peerID) {
+  const peer = normalizeUserID(peerID);
+  if (!state.user || !peer || peer === getCurrentUserID()) return;
+
+  state.dmUnreadByPeer[peer] = 0;
+  if (!isDMRoute()) {
+    state.dmReturnPath = `${location.pathname || "/"}${location.search || ""}`;
+  }
+  syncPresencePanel();
+  navigate(`/dm/${peer}`);
+}
+
+function closeDMConversation() {
+  const target = state.dmReturnPath || "/";
+  clearDMState();
+  syncPresencePanel();
+  navigate(target);
+}
+
+function sendDMMessage(body) {
+  const peerID = normalizeUserID(state.dmPeerID);
+  if (!peerID) {
+    throw new Error("Select a user first");
+  }
+  if (!realtimeSocket || realtimeSocket.readyState !== WebSocket.OPEN) {
+    throw new Error("Realtime connection is not ready");
+  }
+
+  realtimeSocket.send(
+    JSON.stringify({
+      type: "pm:send",
+      to: { id: peerID },
+      body: String(body || ""),
+    })
+  );
+}
+
 function handleRealtimeMessage(payload) {
   if (!payload || typeof payload !== "object") return;
+
+  if (payload.type === "hello") {
+    return;
+  }
 
   if (payload.type === "presence:init") {
     const nextOnline = new Set();
@@ -977,7 +1202,33 @@ function handleRealtimeMessage(payload) {
     return;
   }
 
-  console.log("ws message", payload);
+  if (payload.type === "pm:new") {
+    const message = normalizeDMMessage(payload.message);
+    if (!message) return;
+
+    if (isMessageForPeer(message, state.dmPeerID)) {
+      appendDMMessage(message);
+      if (normalizeUserID(message.from && message.from.id) === state.dmPeerID) {
+        state.dmUnreadByPeer[state.dmPeerID] = 0;
+      }
+      syncDMView();
+      syncPresencePanel();
+      return;
+    }
+
+    if (normalizeUserID(message.to && message.to.id) === getCurrentUserID()) {
+      const peerID = normalizeUserID(message.from && message.from.id);
+      if (peerID && peerID !== getCurrentUserID()) {
+        state.dmUnreadByPeer[peerID] = Number(state.dmUnreadByPeer[peerID] || 0) + 1;
+        syncPresencePanel();
+      }
+    } else {
+      debugWS("ws message", payload);
+    }
+    return;
+  }
+
+  debugWS("ws message", payload);
 }
 
 async function ensureCategories() {
@@ -1040,6 +1291,46 @@ async function feedView() {
           router();
         });
       });
+    },
+  };
+}
+
+async function dmView(params) {
+  await ensureUser(true);
+  await ensureUsersLoaded();
+
+  const peerID = normalizeUserID(params && params.peer);
+  if (!state.user) {
+    return {
+      html: renderLayout({
+        mode: "dm",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Direct Messages</h2><p>Login to open a conversation.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  state.dmPeerID = peerID;
+  state.dmMessages = [];
+  state.dmLoading = false;
+  if (peerID) {
+    state.dmUnreadByPeer[peerID] = 0;
+    await loadDMConversation(peerID);
+  }
+
+  const content = `
+    <section id="dm-view" class="surface form-card">
+      ${renderDMViewContent()}
+    </section>
+  `;
+
+  return {
+    html: renderLayout({ mode: "dm", hideHeading: true, content }),
+    onMount: () => {
+      bindHeaderActions();
+      syncPresencePanel();
+      syncDMView();
     },
   };
 }
@@ -1455,6 +1746,7 @@ const routes = [
   { path: "/", view: feedView },
   { path: "/login", view: loginView },
   { path: "/register", view: registerView },
+  { path: "/dm/:peer", view: dmView },
   { path: "/new", view: newPostView },
   { path: "/post/:id", view: postView },
 ];
@@ -1483,6 +1775,12 @@ function matchRoute(pathname) {
 async function router() {
   applyTheme(state.theme);
   const match = matchRoute(location.pathname) || { route: routes[0], params: {} };
+  const activePeerID = getActiveDMPeerIDFromPath(location.pathname);
+  if (!activePeerID) {
+    state.dmPeerID = "";
+    state.dmMessages = [];
+    state.dmLoading = false;
+  }
   try {
     const view = await match.route.view(match.params || {});
     app.innerHTML = view.html;
@@ -1502,6 +1800,20 @@ async function router() {
 window.addEventListener("popstate", router);
 
 document.addEventListener("click", (e) => {
+  const dmOpen = e.target.closest("[data-action='dm-open']");
+  if (dmOpen) {
+    e.preventDefault();
+    openDM(dmOpen.getAttribute("data-dm-open"));
+    return;
+  }
+
+  const dmClose = e.target.closest("[data-action='dm-close']");
+  if (dmClose) {
+    e.preventDefault();
+    closeDMConversation();
+    return;
+  }
+
   const homeFeedNav = e.target.closest("[data-action='open-home-feed']");
   if (homeFeedNav) {
     e.preventDefault();
@@ -1551,6 +1863,33 @@ document.addEventListener("click", (e) => {
   if (!href || href.startsWith("http")) return;
   e.preventDefault();
   navigate(href);
+});
+
+document.addEventListener("submit", (e) => {
+  const form = e.target.closest("#dm-form");
+  if (!form) return;
+
+  e.preventDefault();
+  const data = new FormData(form);
+  const body = String(data.get("body") || "").trim();
+  const errorBox = document.getElementById("dm-error");
+
+  if (errorBox) errorBox.innerHTML = "";
+  if (!body) {
+    if (errorBox) errorBox.innerHTML = renderNotice("Message is required.");
+    return;
+  }
+
+  try {
+    sendDMMessage(body);
+    form.reset();
+  } catch (err) {
+    if (errorBox) {
+      errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to send message.");
+      return;
+    }
+    alert(err && err.message ? err.message : "Failed to send message.");
+  }
 });
 
 (async () => {

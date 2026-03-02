@@ -16,16 +16,23 @@ const sessionCookieName = "forum_session"
 type Handler struct {
 	auth  *service.AuthService
 	posts *service.PostService
+	pms   *service.PrivateMessageService
 	hub   *realtimews.Hub
 }
 
-func NewHandler(auth *service.AuthService, posts *service.PostService) *Handler {
+func NewHandler(auth *service.AuthService, posts *service.PostService, pms ...*service.PrivateMessageService) *Handler {
 	hub := realtimews.NewHub()
 	go hub.Run()
+
+	var pmService *service.PrivateMessageService
+	if len(pms) > 0 {
+		pmService = pms[0]
+	}
 
 	return &Handler{
 		auth:  auth,
 		posts: posts,
+		pms:   pmService,
 		hub:   hub,
 	}
 }
@@ -37,6 +44,7 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/logout", h.handleLogout)
 	apiMux.HandleFunc("/api/me", h.handleMe)
 	apiMux.HandleFunc("/api/users", h.handleUsers)
+	apiMux.HandleFunc("/api/dm/", h.handleDMConversation)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)
 	apiMux.HandleFunc("/api/posts", h.handlePosts)
 	apiMux.HandleFunc("/api/posts/", h.handlePostsSubroutes)
@@ -94,11 +102,15 @@ func spaHandler(webDir string) http.Handler {
 func isKnownSPARoute(reqPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimPrefix(reqPath, "/"))
 	switch cleanPath {
-	case "/", "/login", "/register", "/new":
+	case "/", "/login", "/register", "/new", "/dm":
 		return true
 	}
 	if strings.HasPrefix(cleanPath, "/post/") {
 		rest := strings.TrimPrefix(cleanPath, "/post/")
+		return rest != "" && !strings.Contains(rest, "/")
+	}
+	if strings.HasPrefix(cleanPath, "/dm/") {
+		rest := strings.TrimPrefix(cleanPath, "/dm/")
 		return rest != "" && !strings.Contains(rest, "/")
 	}
 	return false

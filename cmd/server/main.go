@@ -31,12 +31,14 @@ func main() {
 	commentRepo := sqlite.NewCommentRepo(db)
 	categoryRepo := sqlite.NewCategoryRepo(db)
 	reactionRepo := sqlite.NewReactionRepo(db)
+	privateMessageRepo := sqlite.NewPrivateMessageRepo(db)
 
 	clock := clock.RealClock{}
 	authService := service.NewAuthService(userRepo, sessionRepo, clock, id.UUIDGenerator{}, 24*time.Hour)
 	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, clock)
+	privateMessageService := service.NewPrivateMessageService(userRepo, privateMessageRepo, clock)
 
-	handler := httpserver.NewHandler(authService, postService)
+	handler := httpserver.NewHandler(authService, postService, privateMessageService)
 
 	srv := &http.Server{
 		Addr:    ":8080",

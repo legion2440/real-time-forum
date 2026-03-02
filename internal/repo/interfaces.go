@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"time"
 
 	"forum/internal/domain"
 )
@@ -42,4 +43,9 @@ type CategoryRepo interface {
 type ReactionRepo interface {
 	ReactPost(ctx context.Context, postID, userID int64, value int) error
 	ReactComment(ctx context.Context, commentID, userID int64, value int) error
+}
+
+type PrivateMessageRepo interface {
+	SavePrivateMessage(ctx context.Context, fromID, toID int64, body string, createdAt time.Time) (*domain.PrivateMessage, error)
+	ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error)
 }

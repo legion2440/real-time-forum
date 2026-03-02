@@ -26,6 +26,12 @@ type Hub struct {
 	initialize chan *Client
 	unregister chan *Client
 	broadcast  chan []byte
+	deliver    chan delivery
+}
+
+type delivery struct {
+	userIDs []int64
+	payload []byte
 }
 
 func NewHub() *Hub {
@@ -35,6 +41,7 @@ func NewHub() *Hub {
 		initialize: make(chan *Client),
 		unregister: make(chan *Client),
 		broadcast:  make(chan []byte),
+		deliver:    make(chan delivery),
 	}
 }
 
@@ -49,6 +56,8 @@ func (h *Hub) Run() {
 			h.unregisterClient(client, true)
 		case payload := <-h.broadcast:
 			h.broadcastPayload(payload, nil)
+		case item := <-h.deliver:
+			h.deliverPayload(item.userIDs, item.payload)
 		}
 	}
 }
@@ -122,6 +131,33 @@ func (h *Hub) broadcastPayload(payload []byte, skip *Client) {
 	for _, userClients := range h.clients {
 		for client := range userClients {
 			if (skip != nil && client == skip) || !client.ready {
+				continue
+			}
+			select {
+			case client.send <- payload:
+			default:
+				stale = append(stale, client)
+			}
+		}
+	}
+
+	for _, client := range stale {
+		h.unregisterClient(client, true)
+	}
+}
+
+func (h *Hub) deliverPayload(userIDs []int64, payload []byte) {
+	var stale []*Client
+	seen := make(map[int64]struct{})
+
+	for _, userID := range userIDs {
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+
+		for client := range h.clients[userID] {
+			if !client.ready {
 				continue
 			}
 			select {

@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"forum/internal/domain"
+	"forum/internal/service"
 
 	"github.com/gorilla/websocket"
 )
@@ -34,10 +38,35 @@ type helloUser struct {
 	Name string `json:"name,omitempty"`
 }
 
+type pmSendRequest struct {
+	Type string            `json:"type"`
+	To   privateMessageRef `json:"to"`
+	Body string            `json:"body"`
+}
+
+type privateMessageRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+type pmNewMessage struct {
+	ID        string            `json:"id"`
+	From      privateMessageRef `json:"from"`
+	To        privateMessageRef `json:"to"`
+	Body      string            `json:"body"`
+	CreatedAt time.Time         `json:"createdAt"`
+}
+
+type pmNewEnvelope struct {
+	Type    string       `json:"type"`
+	Message pmNewMessage `json:"message"`
+}
+
 type Client struct {
 	conn *websocket.Conn
 	send chan []byte
 	hub  *Hub
+	pms  *service.PrivateMessageService
 
 	userID   int64
 	userName string
@@ -72,7 +101,7 @@ func IsSameOrigin(r *http.Request) bool {
 	return strings.EqualFold(parsed.Host, r.Host)
 }
 
-func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, user User) error {
+func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, pms *service.PrivateMessageService, user User) error {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return err
@@ -82,6 +111,7 @@ func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, user User) error 
 		conn:     conn,
 		send:     make(chan []byte, 8),
 		hub:      hub,
+		pms:      pms,
 		userID:   user.ID,
 		userName: strings.TrimSpace(user.Name),
 		done:     make(chan struct{}),
@@ -120,9 +150,61 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		if _, _, err := c.conn.ReadMessage(); err != nil {
+		_, raw, err := c.conn.ReadMessage()
+		if err != nil {
 			return
 		}
+		c.handleIncomingMessage(raw)
+	}
+}
+
+func (c *Client) handleIncomingMessage(raw []byte) {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return
+	}
+
+	switch envelope.Type {
+	case "pm:send":
+		c.handlePrivateMessageSend(raw)
+	default:
+		return
+	}
+}
+
+func (c *Client) handlePrivateMessageSend(raw []byte) {
+	if c.pms == nil {
+		return
+	}
+
+	var req pmSendRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return
+	}
+
+	toID, err := strconv.ParseInt(strings.TrimSpace(req.To.ID), 10, 64)
+	if err != nil || toID <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	msg, err := c.pms.Send(ctx, c.userID, toID, req.Body)
+	if err != nil {
+		return
+	}
+
+	payload, err := marshalPrivateMessageEvent(*msg, c.userName)
+	if err != nil {
+		return
+	}
+
+	c.hub.deliver <- delivery{
+		userIDs: []int64{c.userID, toID},
+		payload: payload,
 	}
 }
 
@@ -180,4 +262,22 @@ func (c *Client) unregister() {
 
 func (c *Client) markUnregistered() {
 	c.unregisterOnce.Do(func() {})
+}
+
+func marshalPrivateMessageEvent(msg domain.PrivateMessage, senderName string) ([]byte, error) {
+	return json.Marshal(pmNewEnvelope{
+		Type: "pm:new",
+		Message: pmNewMessage{
+			ID: strconv.FormatInt(msg.ID, 10),
+			From: privateMessageRef{
+				ID:   strconv.FormatInt(msg.FromUserID, 10),
+				Name: strings.TrimSpace(senderName),
+			},
+			To: privateMessageRef{
+				ID: strconv.FormatInt(msg.ToUserID, 10),
+			},
+			Body:      msg.Body,
+			CreatedAt: msg.CreatedAt.UTC(),
+		},
+	})
 }
