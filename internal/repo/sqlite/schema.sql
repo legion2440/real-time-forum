@@ -3,6 +3,10 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   username TEXT NOT NULL UNIQUE,
   display_name TEXT,
+  first_name TEXT NOT NULL DEFAULT '',
+  last_name TEXT NOT NULL DEFAULT '',
+  age INTEGER NOT NULL DEFAULT 0,
+  gender TEXT NOT NULL DEFAULT '',
   pass_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   profile_initialized INTEGER NOT NULL DEFAULT 0

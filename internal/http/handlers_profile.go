@@ -14,6 +14,10 @@ type publicProfileResponse struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
+	FirstName   string `json:"firstName"`
+	LastName    string `json:"lastName"`
+	Age         int    `json:"age"`
+	Gender      string `json:"gender"`
 }
 
 type meResponse struct {
@@ -21,13 +25,21 @@ type meResponse struct {
 	Email             string    `json:"email"`
 	Username          string    `json:"username"`
 	DisplayName       string    `json:"displayName"`
+	FirstName         string    `json:"firstName"`
+	LastName          string    `json:"lastName"`
+	Age               int       `json:"age"`
+	Gender            string    `json:"gender"`
 	NeedsProfileSetup bool      `json:"needsProfileSetup"`
 	CreatedAt         time.Time `json:"created_at"`
 }
 
 type updateProfileRequest struct {
-	DisplayName string `json:"displayName"`
-	Skip        bool   `json:"skip"`
+	DisplayName *string `json:"displayName"`
+	FirstName   *string `json:"firstName"`
+	LastName    *string `json:"lastName"`
+	Age         *int    `json:"age"`
+	Gender      *string `json:"gender"`
+	Skip        bool    `json:"skip"`
 }
 
 func (h *Handler) handlePublicProfile(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +86,7 @@ func (h *Handler) handleMyProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.auth.UpdateMyProfile(r.Context(), userID, req.DisplayName, req.Skip)
+	user, err := h.auth.UpdateMyProfile(r.Context(), userID, req.DisplayName, req.FirstName, req.LastName, req.Age, req.Gender, !req.Skip, req.Skip)
 	if handleServiceError(w, err) {
 		return
 	}
@@ -86,7 +98,11 @@ func newPublicProfileResponse(user domain.User) publicProfileResponse {
 	return publicProfileResponse{
 		ID:          strconv.FormatInt(user.ID, 10),
 		Username:    user.Username,
-		DisplayName: strings.TrimSpace(user.DisplayName),
+		DisplayName: publicDisplayName(user),
+		FirstName:   strings.TrimSpace(user.FirstName),
+		LastName:    strings.TrimSpace(user.LastName),
+		Age:         user.Age,
+		Gender:      strings.TrimSpace(user.Gender),
 	}
 }
 
@@ -96,7 +112,19 @@ func newMeResponse(user domain.User) meResponse {
 		Email:             user.Email,
 		Username:          user.Username,
 		DisplayName:       strings.TrimSpace(user.DisplayName),
+		FirstName:         strings.TrimSpace(user.FirstName),
+		LastName:          strings.TrimSpace(user.LastName),
+		Age:               user.Age,
+		Gender:            strings.TrimSpace(user.Gender),
 		NeedsProfileSetup: !user.ProfileInitialized,
 		CreatedAt:         user.CreatedAt,
 	}
+}
+
+func publicDisplayName(user domain.User) string {
+	displayName := strings.TrimSpace(user.DisplayName)
+	if displayName != "" {
+		return displayName
+	}
+	return strings.TrimSpace(user.Username)
 }

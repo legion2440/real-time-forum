@@ -51,6 +51,22 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureUserFirstNameColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureUserLastNameColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureUserAgeColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureUserGenderColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureUserProfileInitializedColumn(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -113,6 +129,58 @@ func ensureUserProfileInitializedColumn(db *sql.DB) error {
 	}
 
 	_, err = db.Exec("ALTER TABLE users ADD COLUMN profile_initialized INTEGER NOT NULL DEFAULT 0")
+	return err
+}
+
+func ensureUserFirstNameColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "first_name")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''")
+	return err
+}
+
+func ensureUserLastNameColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "last_name")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''")
+	return err
+}
+
+func ensureUserAgeColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "age")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE users ADD COLUMN age INTEGER NOT NULL DEFAULT 0")
+	return err
+}
+
+func ensureUserGenderColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "gender")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE users ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
 	return err
 }
 

@@ -90,13 +90,17 @@ func mustLoginUser(t *testing.T, auth *service.AuthService, email string) string
 
 var _ id.Generator = staticID{}
 
+func stringPtr(value string) *string {
+	return &value
+}
+
 func TestUsersReturnsOnlyPublicFields(t *testing.T) {
 	h, cleanup := newAuthHandler(t)
 	defer cleanup()
 
 	mustRegisterUser(t, h.auth, "first@example.com", "first")
 	secondUserID := mustRegisterUser(t, h.auth, "second@example.com", "second")
-	if _, err := h.auth.UpdateMyProfile(context.Background(), secondUserID, "Visible Second", false); err != nil {
+	if _, err := h.auth.UpdateMyProfile(context.Background(), secondUserID, stringPtr("Visible Second"), nil, nil, nil, nil, true, false); err != nil {
 		t.Fatalf("set display name: %v", err)
 	}
 	token := mustLoginUser(t, h.auth, "first@example.com")

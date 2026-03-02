@@ -14,7 +14,7 @@ func TestPublicProfileReturnsOnlyPublicFields(t *testing.T) {
 	defer cleanup()
 
 	mustRegisterUser(t, h.auth, "alpha@example.com", "alpha")
-	if _, err := h.auth.UpdateMyProfile(context.Background(), 1, "Odinn", false); err != nil {
+	if _, err := h.auth.UpdateMyProfile(context.Background(), 1, stringPtr("Odinn"), stringPtr("Odin"), stringPtr("Stormborn"), intPtr(42), stringPtr("male"), true, false); err != nil {
 		t.Fatalf("update profile: %v", err)
 	}
 
@@ -31,6 +31,9 @@ func TestPublicProfileReturnsOnlyPublicFields(t *testing.T) {
 	if !strings.Contains(body, `"id":"1"`) || !strings.Contains(body, `"username":"alpha"`) || !strings.Contains(body, `"displayName":"Odinn"`) {
 		t.Fatalf("expected public profile fields, got %q", body)
 	}
+	if !strings.Contains(body, `"firstName":"Odin"`) || !strings.Contains(body, `"lastName":"Stormborn"`) || !strings.Contains(body, `"age":42`) || !strings.Contains(body, `"gender":"male"`) {
+		t.Fatalf("expected extended public profile fields, got %q", body)
+	}
 	if strings.Contains(body, `"email"`) || strings.Contains(body, "pass") || strings.Contains(body, "hash") {
 		t.Fatalf("expected response without sensitive fields, got %q", body)
 	}
@@ -44,7 +47,7 @@ func TestUpdateMyProfileValidatesConflictsAndSetup(t *testing.T) {
 	mustRegisterUser(t, h.auth, "beta@example.com", "beta")
 	mustRegisterUser(t, h.auth, "gamma@example.com", "gamma")
 
-	if _, err := h.auth.UpdateMyProfile(context.Background(), 2, "TakenName", false); err != nil {
+	if _, err := h.auth.UpdateMyProfile(context.Background(), 2, stringPtr("TakenName"), nil, nil, nil, nil, true, false); err != nil {
 		t.Fatalf("seed beta display name: %v", err)
 	}
 
@@ -58,6 +61,9 @@ func TestUpdateMyProfileValidatesConflictsAndSetup(t *testing.T) {
 	if !strings.Contains(meBefore.Body.String(), `"needsProfileSetup":true`) {
 		t.Fatalf("expected needsProfileSetup=true, got %q", meBefore.Body.String())
 	}
+	if !strings.Contains(meBefore.Body.String(), `"firstName":""`) || !strings.Contains(meBefore.Body.String(), `"lastName":""`) || !strings.Contains(meBefore.Body.String(), `"age":0`) || !strings.Contains(meBefore.Body.String(), `"gender":""`) {
+		t.Fatalf("expected default extended profile fields, got %q", meBefore.Body.String())
+	}
 
 	conflictUsername := performProfileRequest(t, handler, http.MethodPut, "/api/me/profile", `{"displayName":"BETA"}`, alphaToken)
 	if conflictUsername.Code != http.StatusBadRequest {
@@ -69,7 +75,7 @@ func TestUpdateMyProfileValidatesConflictsAndSetup(t *testing.T) {
 		t.Fatalf("expected status %d, got %d body=%q", http.StatusBadRequest, conflictDisplayName.Code, conflictDisplayName.Body.String())
 	}
 
-	ownUsernameAllowed := performProfileRequest(t, handler, http.MethodPut, "/api/me/profile", `{"displayName":"ALPHA"}`, alphaToken)
+	ownUsernameAllowed := performProfileRequest(t, handler, http.MethodPut, "/api/me/profile", `{"displayName":"ALPHA","firstName":"Alpha","lastName":"Wolf","age":27,"gender":"robot"}`, alphaToken)
 	if ownUsernameAllowed.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, ownUsernameAllowed.Code, ownUsernameAllowed.Body.String())
 	}
@@ -80,6 +86,9 @@ func TestUpdateMyProfileValidatesConflictsAndSetup(t *testing.T) {
 	}
 	if !strings.Contains(meAfterSave.Body.String(), `"needsProfileSetup":false`) {
 		t.Fatalf("expected needsProfileSetup=false after save, got %q", meAfterSave.Body.String())
+	}
+	if !strings.Contains(meAfterSave.Body.String(), `"firstName":"Alpha"`) || !strings.Contains(meAfterSave.Body.String(), `"lastName":"Wolf"`) || !strings.Contains(meAfterSave.Body.String(), `"age":27`) || !strings.Contains(meAfterSave.Body.String(), `"gender":"robot"`) {
+		t.Fatalf("expected updated extended profile fields, got %q", meAfterSave.Body.String())
 	}
 
 	if err := h.auth.Logout(context.Background(), alphaToken); err != nil {
@@ -124,4 +133,8 @@ func performProfileRequest(t *testing.T, handler http.Handler, method, path, bod
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func intPtr(value int) *int {
+	return &value
 }

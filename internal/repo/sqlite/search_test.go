@@ -17,10 +17,10 @@ func TestPostRepo_SearchByTitleBodyAuthor(t *testing.T) {
 
 	aliceID := mustCreateUser(t, ctx, users, "alice@example.com", "AliceUser")
 	bobID := mustCreateUser(t, ctx, users, "bob@example.com", "BobUser")
-	if err := users.UpdateProfile(ctx, aliceID, stringPtr("Captain Alice"), true); err != nil {
+	if err := users.UpdateProfile(ctx, aliceID, stringPtr("Captain Alice"), "", "", 0, "", true); err != nil {
 		t.Fatalf("set alice display name: %v", err)
 	}
-	if err := users.UpdateProfile(ctx, bobID, stringPtr("Builder Bob"), true); err != nil {
+	if err := users.UpdateProfile(ctx, bobID, stringPtr("Builder Bob"), "", "", 0, "", true); err != nil {
 		t.Fatalf("set bob display name: %v", err)
 	}
 
@@ -98,10 +98,10 @@ func TestCommentRepo_SearchByBodyAuthor(t *testing.T) {
 
 	aliceID := mustCreateUser(t, ctx, users, "alice2@example.com", "alice_thread")
 	bobID := mustCreateUser(t, ctx, users, "bob2@example.com", "bob_thread")
-	if err := users.UpdateProfile(ctx, aliceID, stringPtr("Thread Alice"), true); err != nil {
+	if err := users.UpdateProfile(ctx, aliceID, stringPtr("Thread Alice"), "", "", 0, "", true); err != nil {
 		t.Fatalf("set alice display name: %v", err)
 	}
-	if err := users.UpdateProfile(ctx, bobID, stringPtr("Thread Bob"), true); err != nil {
+	if err := users.UpdateProfile(ctx, bobID, stringPtr("Thread Bob"), "", "", 0, "", true); err != nil {
 		t.Fatalf("set bob display name: %v", err)
 	}
 	postID := mustCreatePost(t, ctx, posts, aliceID, "Thread host", "Body", time.Now().UTC())

@@ -68,6 +68,38 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 		t.Fatal("expected users.profile_initialized column to be added")
 	}
 
+	hasFirstName, err := tableHasColumn(db, "users", "first_name")
+	if err != nil {
+		t.Fatalf("check first_name column: %v", err)
+	}
+	if !hasFirstName {
+		t.Fatal("expected users.first_name column to be added")
+	}
+
+	hasLastName, err := tableHasColumn(db, "users", "last_name")
+	if err != nil {
+		t.Fatalf("check last_name column: %v", err)
+	}
+	if !hasLastName {
+		t.Fatal("expected users.last_name column to be added")
+	}
+
+	hasAge, err := tableHasColumn(db, "users", "age")
+	if err != nil {
+		t.Fatalf("check age column: %v", err)
+	}
+	if !hasAge {
+		t.Fatal("expected users.age column to be added")
+	}
+
+	hasGender, err := tableHasColumn(db, "users", "gender")
+	if err != nil {
+		t.Fatalf("check gender column: %v", err)
+	}
+	if !hasGender {
+		t.Fatal("expected users.gender column to be added")
+	}
+
 	userRepo := NewUserRepo(db)
 	user, err := userRepo.GetByUsername(context.Background(), "legacy-user")
 	if err != nil {
@@ -75,5 +107,8 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 	}
 	if user.Email != "legacy@example.com" {
 		t.Fatalf("expected migrated user email to be preserved, got %q", user.Email)
+	}
+	if user.FirstName != "" || user.LastName != "" || user.Age != 0 || user.Gender != "" {
+		t.Fatalf("expected new profile fields to keep defaults, got %+v", user)
 	}
 }

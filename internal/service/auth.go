@@ -44,6 +44,7 @@ type AuthService struct {
 }
 
 const maxDisplayNameLength = 64
+const maxProfileAge = 150
 
 func NewAuthService(users repo.UserRepo, sessions repo.SessionRepo, clock clock.Clock, idGen id.Generator, ttl time.Duration) *AuthService {
 	return &AuthService{
@@ -191,7 +192,7 @@ func (s *AuthService) GetMyProfile(ctx context.Context, userID int64) (*domain.U
 	return s.GetUserByID(ctx, userID)
 }
 
-func (s *AuthService) UpdateMyProfile(ctx context.Context, userID int64, displayName string, skip bool) (*domain.User, error) {
+func (s *AuthService) UpdateMyProfile(ctx context.Context, userID int64, displayName, firstName, lastName *string, age *int, gender *string, markInitialized, skip bool) (*domain.User, error) {
 	if userID <= 0 {
 		return nil, ErrInvalidInput
 	}
@@ -202,7 +203,7 @@ func (s *AuthService) UpdateMyProfile(ctx context.Context, userID int64, display
 	}
 
 	if skip {
-		if err := s.users.UpdateProfile(ctx, userID, normalizeStoredDisplayName(user.DisplayName), true); err != nil {
+		if err := s.users.UpdateProfile(ctx, userID, normalizeStoredDisplayName(user.DisplayName), user.FirstName, user.LastName, user.Age, user.Gender, true); err != nil {
 			if errors.Is(err, repo.ErrNotFound) {
 				return nil, ErrNotFound
 			}
@@ -211,23 +212,51 @@ func (s *AuthService) UpdateMyProfile(ctx context.Context, userID int64, display
 		return s.GetUserByID(ctx, userID)
 	}
 
-	displayName = strings.TrimSpace(displayName)
-	if utf8.RuneCountInString(displayName) > maxDisplayNameLength {
-		return nil, ErrInvalidInput
+	displayNameToStore := normalizeStoredDisplayName(user.DisplayName)
+	if displayName != nil {
+		nextDisplayName := strings.TrimSpace(*displayName)
+		if utf8.RuneCountInString(nextDisplayName) > maxDisplayNameLength {
+			return nil, ErrInvalidInput
+		}
+
+		displayNameToStore = normalizeProfileDisplayName(nextDisplayName, user.Username)
+		if displayNameToStore != nil {
+			taken, err := s.isDisplayNameTaken(ctx, *displayNameToStore, userID)
+			if err != nil {
+				return nil, err
+			}
+			if taken {
+				return nil, ErrDisplayNameTaken
+			}
+		}
 	}
 
-	displayNameToStore := normalizeProfileDisplayName(displayName, user.Username)
-	if displayNameToStore != nil {
-		taken, err := s.isDisplayNameTaken(ctx, *displayNameToStore, userID)
-		if err != nil {
-			return nil, err
-		}
-		if taken {
-			return nil, ErrDisplayNameTaken
-		}
+	nextFirstName := user.FirstName
+	if firstName != nil {
+		nextFirstName = strings.TrimSpace(*firstName)
 	}
 
-	if err := s.users.UpdateProfile(ctx, userID, displayNameToStore, true); err != nil {
+	nextLastName := user.LastName
+	if lastName != nil {
+		nextLastName = strings.TrimSpace(*lastName)
+	}
+
+	nextAge := user.Age
+	if age != nil {
+		if *age < 0 || *age > maxProfileAge {
+			return nil, ErrInvalidInput
+		}
+		nextAge = *age
+	}
+
+	nextGender := user.Gender
+	if gender != nil {
+		nextGender = strings.TrimSpace(*gender)
+	}
+
+	nextProfileInitialized := user.ProfileInitialized || markInitialized
+
+	if err := s.users.UpdateProfile(ctx, userID, displayNameToStore, nextFirstName, nextLastName, nextAge, nextGender, nextProfileInitialized); err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return nil, ErrNotFound
 		}

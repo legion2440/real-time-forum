@@ -89,6 +89,26 @@ function getDisplayNameOrUsername(profile) {
   return displayName || username || "user";
 }
 
+function getProfileAgeValue(profile) {
+  const age = Number(profile && profile.age);
+  if (!Number.isFinite(age) || age <= 0) return "";
+  return String(age);
+}
+
+function getProfileFieldValue(profile, key) {
+  return String((profile && profile[key]) || "").trim();
+}
+
+function renderProfileField(label, value) {
+  const content = String(value || "").trim() || "Not set";
+  return `
+    <div class="profile-field-row">
+      <span class="profile-field-label">${escapeHTML(label)}</span>
+      <strong>${escapeHTML(content)}</strong>
+    </div>
+  `;
+}
+
 function getUserByID(userID) {
   const id = normalizeUserID(userID);
   return (state.users || []).find((user) => normalizeUserID(user && user.id) === id) || null;
@@ -1459,7 +1479,12 @@ async function profileView(params) {
   const setupMode = isSelf && state.user && state.user.needsProfileSetup && new URLSearchParams(location.search).get("setup") === "1";
   const heading = getDisplayNameOrUsername(profile);
   const subtitle = `@${normalizeUsername(profile && profile.username) || routeUsername}`;
+  const editableProfile = isSelf ? state.user : profile;
   const selfDisplayName = isSelf ? String(state.user && state.user.displayName ? state.user.displayName : "").trim() : String(profile && profile.displayName ? profile.displayName : "").trim();
+  const selfFirstName = getProfileFieldValue(editableProfile, "firstName");
+  const selfLastName = getProfileFieldValue(editableProfile, "lastName");
+  const selfAge = getProfileAgeValue(editableProfile);
+  const selfGender = getProfileFieldValue(editableProfile, "gender");
 
   const content = `
     <section class="page-head">
@@ -1473,7 +1498,7 @@ async function profileView(params) {
         <h2>${isSelf ? "Your profile" : "Profile"}</h2>
         <p>${isSelf ? "Display name is optional. Username stays unchanged." : "Public profile."}</p>
       </div>
-      ${setupMode ? renderNotice("Complete your profile setup now or skip. You can update your display name later.") : ""}
+      ${setupMode ? renderNotice("Complete your profile setup now or skip. You can update these fields later from your profile.") : ""}
       ${
         isSelf
           ? `
@@ -1481,6 +1506,22 @@ async function profileView(params) {
               <label class="field">
                 <span>Display name</span>
                 <input type="text" name="displayName" maxlength="64" value="${escapeHTML(selfDisplayName)}" placeholder="Leave blank to use your username" />
+              </label>
+              <label class="field">
+                <span>First name</span>
+                <input type="text" name="firstName" value="${escapeHTML(selfFirstName)}" placeholder="Optional" />
+              </label>
+              <label class="field">
+                <span>Last name</span>
+                <input type="text" name="lastName" value="${escapeHTML(selfLastName)}" placeholder="Optional" />
+              </label>
+              <label class="field">
+                <span>Age</span>
+                <input type="number" name="age" min="0" max="150" step="1" value="${escapeHTML(selfAge)}" placeholder="Optional" />
+              </label>
+              <label class="field">
+                <span>Gender</span>
+                <input type="text" name="gender" value="${escapeHTML(selfGender)}" placeholder="Optional" />
               </label>
               <div class="side-note">Username: ${escapeHTML(subtitle)}</div>
               <div class="form-actions">
@@ -1492,14 +1533,12 @@ async function profileView(params) {
           `
           : `
             <div class="profile-readonly">
-              <div class="profile-field-row">
-                <span class="profile-field-label">Display name</span>
-                <strong>${escapeHTML(getDisplayNameOrUsername(profile))}</strong>
-              </div>
-              <div class="profile-field-row">
-                <span class="profile-field-label">Username</span>
-                <strong>${escapeHTML(subtitle)}</strong>
-              </div>
+              ${renderProfileField("Display name", getDisplayNameOrUsername(profile))}
+              ${renderProfileField("Username", subtitle)}
+              ${renderProfileField("First name", getProfileFieldValue(profile, "firstName"))}
+              ${renderProfileField("Last name", getProfileFieldValue(profile, "lastName"))}
+              ${renderProfileField("Age", getProfileAgeValue(profile))}
+              ${renderProfileField("Gender", getProfileFieldValue(profile, "gender"))}
             </div>
           `
       }
@@ -1522,13 +1561,20 @@ async function profileView(params) {
           if (errorBox) errorBox.innerHTML = "";
 
           const data = new FormData(form);
+          const ageRaw = String(data.get("age") || "").trim();
           try {
             await apiFetch("/api/me/profile", {
               method: "PUT",
-              body: JSON.stringify({ displayName: data.get("displayName") }),
+              body: JSON.stringify({
+                displayName: data.get("displayName"),
+                firstName: data.get("firstName"),
+                lastName: data.get("lastName"),
+                age: ageRaw === "" ? null : Number.parseInt(ageRaw, 10),
+                gender: data.get("gender"),
+              }),
             });
             await ensureUser(true);
-            navigate(getProfilePath(state.user && state.user.username));
+            navigate("/");
           } catch (err) {
             if (err && err.handled) return;
             if (errorBox) {
@@ -1549,7 +1595,7 @@ async function profileView(params) {
               body: JSON.stringify({ skip: true }),
             });
             await ensureUser(true);
-            navigate(getProfilePath(state.user && state.user.username));
+            navigate("/");
           } catch (err) {
             if (err && err.handled) return;
             if (errorBox) {

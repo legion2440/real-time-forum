@@ -34,7 +34,7 @@ func (r *UserRepo) Create(ctx context.Context, user *domain.User) (int64, error)
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         WHERE email = ?
     `, email)
@@ -44,7 +44,7 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 
 func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         WHERE username = ?
     `, username)
@@ -54,7 +54,7 @@ func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*domain.
 
 func (r *UserRepo) GetByUsernameCI(ctx context.Context, username string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         WHERE username = ? COLLATE NOCASE
         ORDER BY id ASC
@@ -66,7 +66,7 @@ func (r *UserRepo) GetByUsernameCI(ctx context.Context, username string) (*domai
 
 func (r *UserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         WHERE id = ?
     `, id)
@@ -76,7 +76,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) 
 
 func (r *UserRepo) GetByDisplayNameCI(ctx context.Context, displayName string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         WHERE display_name = ? COLLATE NOCASE
           AND display_name IS NOT NULL
@@ -90,7 +90,7 @@ func (r *UserRepo) GetByDisplayNameCI(ctx context.Context, displayName string) (
 
 func (r *UserRepo) GetPublicByUsername(ctx context.Context, username string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, username, display_name
+        SELECT id, username, display_name, first_name, last_name, age, gender
         FROM users
         WHERE username = ?
     `, username)
@@ -99,17 +99,20 @@ func (r *UserRepo) GetPublicByUsername(ctx context.Context, username string) (*d
 		user        domain.User
 		displayName sql.NullString
 	)
-	if err := row.Scan(&user.ID, &user.Username, &displayName); err != nil {
+	if err := row.Scan(&user.ID, &user.Username, &displayName, &user.FirstName, &user.LastName, &user.Age, &user.Gender); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
 		return nil, err
 	}
 	user.DisplayName = strings.TrimSpace(displayName.String)
+	user.FirstName = strings.TrimSpace(user.FirstName)
+	user.LastName = strings.TrimSpace(user.LastName)
+	user.Gender = strings.TrimSpace(user.Gender)
 	return &user, nil
 }
 
-func (r *UserRepo) UpdateProfile(ctx context.Context, userID int64, displayName *string, profileInitialized bool) error {
+func (r *UserRepo) UpdateProfile(ctx context.Context, userID int64, displayName *string, firstName, lastName string, age int, gender string, profileInitialized bool) error {
 	var normalizedDisplayName any
 	if displayName != nil {
 		trimmed := strings.TrimSpace(*displayName)
@@ -120,9 +123,9 @@ func (r *UserRepo) UpdateProfile(ctx context.Context, userID int64, displayName 
 
 	res, err := r.db.ExecContext(ctx, `
         UPDATE users
-        SET display_name = ?, profile_initialized = ?
+        SET display_name = ?, first_name = ?, last_name = ?, age = ?, gender = ?, profile_initialized = ?
         WHERE id = ?
-    `, normalizedDisplayName, boolToInt(profileInitialized), userID)
+    `, normalizedDisplayName, strings.TrimSpace(firstName), strings.TrimSpace(lastName), age, strings.TrimSpace(gender), boolToInt(profileInitialized), userID)
 	if err != nil {
 		return err
 	}
@@ -139,7 +142,7 @@ func (r *UserRepo) UpdateProfile(ctx context.Context, userID int64, displayName 
 
 func (r *UserRepo) List(ctx context.Context) ([]domain.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, email, username, display_name, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         ORDER BY id ASC
     `)
@@ -201,10 +204,13 @@ func scanUser(s scanner) (*domain.User, error) {
 	var (
 		user               domain.User
 		displayName        sql.NullString
+		firstName          string
+		lastName           string
+		gender             string
 		createdAtUnix      int64
 		profileInitialized int
 	)
-	if err := s.Scan(&user.ID, &user.Email, &user.Username, &displayName, &user.PassHash, &createdAtUnix, &profileInitialized); err != nil {
+	if err := s.Scan(&user.ID, &user.Email, &user.Username, &displayName, &firstName, &lastName, &user.Age, &gender, &user.PassHash, &createdAtUnix, &profileInitialized); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
@@ -212,6 +218,9 @@ func scanUser(s scanner) (*domain.User, error) {
 	}
 
 	user.DisplayName = strings.TrimSpace(displayName.String)
+	user.FirstName = strings.TrimSpace(firstName)
+	user.LastName = strings.TrimSpace(lastName)
+	user.Gender = strings.TrimSpace(gender)
 	user.CreatedAt = unixToTime(createdAtUnix)
 	user.ProfileInitialized = profileInitialized != 0
 	return &user, nil
