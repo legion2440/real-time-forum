@@ -46,6 +46,7 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/me", h.handleMe)
 	apiMux.HandleFunc("/api/u/", h.handlePublicProfile)
 	apiMux.HandleFunc("/api/users", h.handleUsers)
+	apiMux.HandleFunc("/api/dm/peers", h.handleDMPeers)
 	apiMux.HandleFunc("/api/dm/", h.handleDMConversation)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)
 	apiMux.HandleFunc("/api/posts", h.handlePosts)

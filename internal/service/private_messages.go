@@ -57,3 +57,10 @@ func (s *PrivateMessageService) ListConversationLast(ctx context.Context, userA,
 
 	return s.messages.ListConversationLast(ctx, userA, userB, limit)
 }
+
+func (s *PrivateMessageService) ListPeers(ctx context.Context, userID int64) ([]domain.PrivateMessagePeer, error) {
+	if userID <= 0 {
+		return nil, ErrInvalidInput
+	}
+	return s.messages.ListPeers(ctx, userID)
+}

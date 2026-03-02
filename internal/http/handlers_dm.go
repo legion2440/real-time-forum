@@ -22,6 +22,43 @@ type privateMessageDTO struct {
 	CreatedAt time.Time             `json:"createdAt"`
 }
 
+type privateMessagePeerDTO struct {
+	ID            string `json:"id"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"displayName"`
+	LastMessageAt int64  `json:"lastMessageAt"`
+}
+
+func (h *Handler) handleDMPeers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+
+	peers, err := h.pms.ListPeers(r.Context(), userID)
+	if handleServiceError(w, err) {
+		return
+	}
+
+	response := make([]privateMessagePeerDTO, 0, len(peers))
+	for _, peer := range peers {
+		response = append(response, privateMessagePeerDTO{
+			ID:            strconv.FormatInt(peer.ID, 10),
+			Username:      strings.TrimSpace(peer.Username),
+			DisplayName:   strings.TrimSpace(peer.DisplayName),
+			LastMessageAt: peer.LastMessageAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (h *Handler) handleDMConversation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

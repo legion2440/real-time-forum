@@ -74,3 +74,50 @@ func (r *PrivateMessageRepo) ListConversationLast(ctx context.Context, userA, us
 
 	return messages, nil
 }
+
+func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]domain.PrivateMessagePeer, error) {
+	rows, err := r.db.QueryContext(ctx, `
+        SELECT
+            u.id,
+            u.username,
+            u.display_name,
+            COALESCE(MAX(pm.created_at), 0) AS last_message_at
+        FROM users u
+        LEFT JOIN private_messages pm
+            ON (
+                (pm.from_user_id = ? AND pm.to_user_id = u.id)
+                OR
+                (pm.from_user_id = u.id AND pm.to_user_id = ?)
+            )
+        WHERE u.id <> ?
+        GROUP BY u.id, u.username, u.display_name
+        ORDER BY
+            last_message_at DESC,
+            LOWER(CASE
+                WHEN TRIM(COALESCE(u.display_name, '')) <> '' THEN TRIM(u.display_name)
+                ELSE u.username
+            END) ASC,
+            u.id ASC
+    `, userID, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	peers := make([]domain.PrivateMessagePeer, 0)
+	for rows.Next() {
+		var peer domain.PrivateMessagePeer
+		var displayName sql.NullString
+		if err := rows.Scan(&peer.ID, &peer.Username, &displayName, &peer.LastMessageAt); err != nil {
+			return nil, err
+		}
+		peer.DisplayName = strings.TrimSpace(displayName.String)
+		peers = append(peers, peer)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return peers, nil
+}

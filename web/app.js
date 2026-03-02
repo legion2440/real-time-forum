@@ -8,6 +8,8 @@ const state = {
   usersLoaded: false,
   onlineUserIDs: new Set(),
   dmPeerID: "",
+  dmPeers: [],
+  dmPeersLoaded: false,
   dmMessages: [],
   dmUnreadByPeer: {},
   dmLoading: false,
@@ -136,16 +138,31 @@ function getActiveProfileUsernameFromPath(pathname = location.pathname) {
 }
 
 function isDMRoute(pathname = location.pathname) {
-  return Boolean(getActiveDMPeerIDFromPath(pathname));
+  return /^\/dm(?:\/|$)/.test(String(pathname || ""));
 }
 
 function clearDMState() {
   state.dmPeerID = "";
+  state.dmPeers = [];
+  state.dmPeersLoaded = false;
   state.dmMessages = [];
   state.dmUnreadByPeer = {};
   state.dmLoading = false;
   state.dmReturnPath = "";
   syncDMView();
+  syncDMPeersPanel();
+}
+
+function clearDMConversationState(preserveUnread = true) {
+  state.dmPeerID = "";
+  state.dmMessages = [];
+  state.dmLoading = false;
+  state.dmReturnPath = "";
+  if (!preserveUnread) {
+    state.dmUnreadByPeer = {};
+  }
+  syncDMView();
+  syncDMPeersPanel();
 }
 
 function clearPresenceState() {
@@ -658,6 +675,105 @@ function renderNotice(msg) {
   return `<div class="notice-box">${escapeHTML(msg)}</div>`;
 }
 
+function normalizeDMPeer(peer) {
+  if (!peer || typeof peer !== "object") return null;
+  const id = normalizeUserID(peer.id);
+  const username = normalizeUsername(peer.username);
+  const displayName = String(peer.displayName || peer.display_name || "").trim();
+  const lastMessageAt = Number(peer.lastMessageAt ?? peer.last_message_at ?? 0);
+  if (!id || !username) return null;
+  return {
+    id,
+    username,
+    displayName,
+    lastMessageAt: Number.isFinite(lastMessageAt) && lastMessageAt > 0 ? lastMessageAt : 0,
+  };
+}
+
+function getDMPeerLabel(peer) {
+  return getDisplayNameOrUsername(peer);
+}
+
+function sortDMPeers(peers) {
+  return [...(Array.isArray(peers) ? peers : [])].sort((a, b) => {
+    const lastA = Number(a && a.lastMessageAt ? a.lastMessageAt : 0);
+    const lastB = Number(b && b.lastMessageAt ? b.lastMessageAt : 0);
+    if (lastA !== lastB) return lastB - lastA;
+
+    const labelA = getDMPeerLabel(a).toLocaleLowerCase();
+    const labelB = getDMPeerLabel(b).toLocaleLowerCase();
+    if (labelA !== labelB) return labelA.localeCompare(labelB, undefined, { sensitivity: "base" });
+
+    return normalizeUserID(a && a.id).localeCompare(normalizeUserID(b && b.id), undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+function renderDMPeersList(peers, emptyLabel) {
+  if (!Array.isArray(peers) || peers.length === 0) {
+    return `<div class="dm-peers-empty">${escapeHTML(emptyLabel)}</div>`;
+  }
+
+  return peers
+    .map((peer) => {
+      const id = normalizeUserID(peer && peer.id);
+      const username = normalizeUsername(peer && peer.username);
+      const label = getDMPeerLabel(peer);
+      const unread = Number(state.dmUnreadByPeer[id] || 0);
+      const lastMessageAt = Number(peer && peer.lastMessageAt ? peer.lastMessageAt : 0);
+      const activityLabel = lastMessageAt > 0 ? formatDate(new Date(lastMessageAt * 1000).toISOString()) : "No messages yet";
+      if (!id || !username) return "";
+      return `
+        <button
+          class="dm-peer-item ${id === state.dmPeerID ? "is-active" : ""}"
+          type="button"
+          data-action="dm-open"
+          data-dm-open="${escapeHTML(id)}"
+        >
+          <div class="dm-peer-main">
+            <div class="dm-peer-head">
+              <strong>${escapeHTML(label)}</strong>
+              ${unread > 0 ? `<span class="dm-peer-badge">${escapeHTML(String(unread))}</span>` : ""}
+            </div>
+            <div class="dm-peer-subhead">
+              <span>@${escapeHTML(username)}</span>
+              <span>${escapeHTML(activityLabel)}</span>
+            </div>
+          </div>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderDMPeersContent() {
+  if (!state.user) return "";
+
+  const sortedPeers = sortDMPeers(state.dmPeers);
+  const onlinePeers = sortedPeers.filter((peer) => state.onlineUserIDs.has(normalizeUserID(peer && peer.id)));
+  const offlinePeers = sortedPeers.filter((peer) => !state.onlineUserIDs.has(normalizeUserID(peer && peer.id)));
+
+  return `
+    <div class="section-row">
+      <h2>Conversations</h2>
+      <p>${sortedPeers.length} total</p>
+    </div>
+    <div class="dm-peers-scroll">
+      <div class="dm-peers-section">
+        <div class="sidebar-title">Online</div>
+        <div class="dm-peers-list">
+          ${renderDMPeersList(onlinePeers, "Nobody online")}
+        </div>
+      </div>
+      <div class="dm-peers-section">
+        <div class="sidebar-title">Offline</div>
+        <div class="dm-peers-list">
+          ${renderDMPeersList(offlinePeers, "Nobody offline")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderDMViewContent() {
   if (!state.user) return "";
 
@@ -665,7 +781,7 @@ function renderDMViewContent() {
     return `
       <div class="section-row">
         <h2>Direct Messages</h2>
-        <p>Select a user from Presence.</p>
+        <p>Select a conversation to open the thread.</p>
       </div>
     `;
   }
@@ -744,6 +860,12 @@ function syncDMView() {
   const panel = document.getElementById("dm-view");
   if (!panel) return;
   panel.innerHTML = renderDMViewContent();
+}
+
+function syncDMPeersPanel() {
+  const panel = document.getElementById("dm-peers-panel");
+  if (!panel) return;
+  panel.innerHTML = renderDMPeersContent();
 }
 
 function renderPresencePanel() {
@@ -1196,6 +1318,30 @@ async function ensureUsersLoaded(force = false) {
   syncPresencePanel();
 }
 
+async function loadDMPeers(force = false) {
+  if (!state.user) {
+    state.dmPeers = [];
+    state.dmPeersLoaded = false;
+    syncDMPeersPanel();
+    return;
+  }
+  if (state.dmPeersLoaded && !force) {
+    syncDMPeersPanel();
+    return;
+  }
+
+  try {
+    const peers = (await apiFetch("/api/dm/peers")) || [];
+    state.dmPeers = Array.isArray(peers) ? sortDMPeers(peers.map(normalizeDMPeer).filter(Boolean)) : [];
+    state.dmPeersLoaded = true;
+  } catch (_) {
+    state.dmPeers = [];
+    state.dmPeersLoaded = false;
+  }
+
+  syncDMPeersPanel();
+}
+
 function isMessageForPeer(message, peerID) {
   const me = getCurrentUserID();
   const peer = normalizeUserID(peerID);
@@ -1240,12 +1386,13 @@ function openDM(peerID) {
     state.dmReturnPath = `${location.pathname || "/"}${location.search || ""}`;
   }
   syncPresencePanel();
+  syncDMPeersPanel();
   navigate(`/dm/${peer}`);
 }
 
 function closeDMConversation() {
-  const target = state.dmReturnPath || "/";
-  clearDMState();
+  const target = state.dmReturnPath || "/dm";
+  clearDMConversationState(true);
   syncPresencePanel();
   navigate(target);
 }
@@ -1288,6 +1435,7 @@ function handleRealtimeMessage(payload) {
     });
     state.onlineUserIDs = nextOnline;
     syncPresencePanel();
+    syncDMPeersPanel();
     return;
   }
 
@@ -1304,12 +1452,14 @@ function handleRealtimeMessage(payload) {
     }
 
     syncPresencePanel();
+    syncDMPeersPanel();
     return;
   }
 
   if (payload.type === "pm:new") {
     const message = normalizeDMMessage(payload.message);
     if (!message) return;
+    updateDMPeerActivity(message);
 
     if (isMessageForPeer(message, state.dmPeerID)) {
       appendDMMessage(message);
@@ -1318,6 +1468,7 @@ function handleRealtimeMessage(payload) {
       }
       syncDMView();
       syncPresencePanel();
+      syncDMPeersPanel();
       return;
     }
 
@@ -1326,6 +1477,7 @@ function handleRealtimeMessage(payload) {
       if (peerID && peerID !== getCurrentUserID()) {
         state.dmUnreadByPeer[peerID] = Number(state.dmUnreadByPeer[peerID] || 0) + 1;
         syncPresencePanel();
+        syncDMPeersPanel();
       }
     } else {
       debugWS("ws message", payload);
@@ -1334,6 +1486,36 @@ function handleRealtimeMessage(payload) {
   }
 
   debugWS("ws message", payload);
+}
+
+function updateDMPeerActivity(message) {
+  const me = getCurrentUserID();
+  if (!me || !message) return;
+
+  const fromID = normalizeUserID(message.from && message.from.id);
+  const toID = normalizeUserID(message.to && message.to.id);
+  const peerID = fromID === me ? toID : toID === me ? fromID : "";
+  if (!peerID || peerID === me) return;
+
+  const created = new Date(message.createdAt);
+  const nextLastMessageAt = Number.isFinite(created.getTime()) ? Math.floor(created.getTime() / 1000) : 0;
+  if (nextLastMessageAt <= 0) return;
+
+  let changed = false;
+  state.dmPeers = sortDMPeers(
+    (state.dmPeers || []).map((peer) => {
+      if (normalizeUserID(peer && peer.id) !== peerID) return peer;
+      changed = true;
+      return {
+        ...peer,
+        lastMessageAt: nextLastMessageAt,
+      };
+    })
+  );
+
+  if (changed) {
+    syncDMPeersPanel();
+  }
 }
 
 async function ensureCategories() {
@@ -1403,6 +1585,7 @@ async function feedView() {
 async function dmView(params) {
   await ensureUser(true);
   await ensureUsersLoaded();
+  await loadDMPeers(true);
 
   const peerID = normalizeUserID(params && params.peer);
   if (!state.user) {
@@ -1416,17 +1599,30 @@ async function dmView(params) {
     };
   }
 
-  state.dmPeerID = peerID;
+  const hasPeer = peerID && peerID !== getCurrentUserID() && state.dmPeers.some((peer) => normalizeUserID(peer && peer.id) === peerID);
+  state.dmPeerID = hasPeer ? peerID : "";
   state.dmMessages = [];
   state.dmLoading = false;
-  if (peerID) {
-    state.dmUnreadByPeer[peerID] = 0;
-    await loadDMConversation(peerID);
+  if (state.dmPeerID) {
+    state.dmUnreadByPeer[state.dmPeerID] = 0;
+    try {
+      await loadDMConversation(state.dmPeerID);
+    } catch (err) {
+      if (!err || err.status !== 404) throw err;
+      state.dmPeerID = "";
+      state.dmMessages = [];
+      state.dmLoading = false;
+    }
   }
 
   const content = `
-    <section id="dm-view" class="surface form-card">
-      ${renderDMViewContent()}
+    <section class="dm-layout">
+      <section id="dm-peers-panel" class="surface form-card dm-peers">
+        ${renderDMPeersContent()}
+      </section>
+      <section id="dm-view" class="surface form-card dm-chat">
+        ${renderDMViewContent()}
+      </section>
     </section>
   `;
 
@@ -1435,9 +1631,14 @@ async function dmView(params) {
     onMount: () => {
       bindHeaderActions();
       syncPresencePanel();
+      syncDMPeersPanel();
       syncDMView();
     },
   };
+}
+
+async function dmIndexView() {
+  return dmView({});
 }
 
 async function profileView(params) {
@@ -2023,6 +2224,7 @@ const routes = [
   { path: "/", view: feedView },
   { path: "/login", view: loginView },
   { path: "/register", view: registerView },
+  { path: "/dm", view: dmIndexView },
   { path: "/dm/:peer", view: dmView },
   { path: "/u/:username", view: profileView },
   { path: "/new", view: newPostView },

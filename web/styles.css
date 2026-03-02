@@ -1334,6 +1334,130 @@ textarea {
   font-weight: 600;
 }
 
+.dm-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.dm-peers,
+.dm-chat {
+  min-width: 0;
+}
+
+.dm-peers {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dm-peers-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.dm-peers-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dm-peers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dm-peers-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 6px 2px;
+}
+
+.dm-peer-item {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.dm-peer-item:hover {
+  border-color: var(--line-strong);
+}
+
+.dm-peer-item.is-active {
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--line));
+  background: color-mix(in srgb, var(--primary-soft) 55%, var(--surface));
+}
+
+.dm-peer-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.dm-peer-item:active {
+  transform: translateY(1px);
+}
+
+.dm-peer-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dm-peer-head,
+.dm-peer-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dm-peer-head strong {
+  min-width: 0;
+  font-size: 0.96rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-peer-subhead {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.dm-peer-subhead span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-peer-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .dm-thread {
   display: flex;
   flex-direction: column;
@@ -1477,6 +1601,14 @@ textarea {
   .hero-grid,
   .auth-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dm-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dm-peers-scroll {
+    max-height: none;
   }
 }
 

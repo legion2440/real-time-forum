@@ -11,3 +11,10 @@ type PrivateMessage struct {
 	Body            string
 	CreatedAt       time.Time
 }
+
+type PrivateMessagePeer struct {
+	ID            int64
+	Username      string
+	DisplayName   string
+	LastMessageAt int64
+}
