@@ -718,6 +718,7 @@ function renderDMPeersList(peers, emptyLabel) {
       const id = normalizeUserID(peer && peer.id);
       const username = normalizeUsername(peer && peer.username);
       const label = getDMPeerLabel(peer);
+      const isOnline = state.onlineUserIDs.has(id);
       const unread = Number(state.dmUnreadByPeer[id] || 0);
       const lastMessageAt = Number(peer && peer.lastMessageAt ? peer.lastMessageAt : 0);
       const activityLabel = lastMessageAt > 0 ? formatDate(new Date(lastMessageAt * 1000).toISOString()) : "No messages yet";
@@ -731,7 +732,10 @@ function renderDMPeersList(peers, emptyLabel) {
         >
           <div class="dm-peer-main">
             <div class="dm-peer-head">
-              <strong>${escapeHTML(label)}</strong>
+              <div class="dm-peer-title">
+                <span class="dm-peer-status-dot ${isOnline ? "is-online" : "is-offline"}" aria-hidden="true"></span>
+                <strong>${escapeHTML(label)}</strong>
+              </div>
               ${unread > 0 ? `<span class="dm-peer-badge">${escapeHTML(String(unread))}</span>` : ""}
             </div>
             <div class="dm-peer-subhead">
@@ -749,8 +753,6 @@ function renderDMPeersContent() {
   if (!state.user) return "";
 
   const sortedPeers = sortDMPeers(state.dmPeers);
-  const onlinePeers = sortedPeers.filter((peer) => state.onlineUserIDs.has(normalizeUserID(peer && peer.id)));
-  const offlinePeers = sortedPeers.filter((peer) => !state.onlineUserIDs.has(normalizeUserID(peer && peer.id)));
 
   return `
     <div class="section-row">
@@ -758,17 +760,8 @@ function renderDMPeersContent() {
       <p>${sortedPeers.length} total</p>
     </div>
     <div class="dm-peers-scroll">
-      <div class="dm-peers-section">
-        <div class="sidebar-title">Online</div>
-        <div class="dm-peers-list">
-          ${renderDMPeersList(onlinePeers, "Nobody online")}
-        </div>
-      </div>
-      <div class="dm-peers-section">
-        <div class="sidebar-title">Offline</div>
-        <div class="dm-peers-list">
-          ${renderDMPeersList(offlinePeers, "Nobody offline")}
-        </div>
+      <div class="dm-peers-list">
+        ${renderDMPeersList(sortedPeers, "No conversations yet")}
       </div>
     </div>
   `;

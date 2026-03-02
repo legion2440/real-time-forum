@@ -1355,16 +1355,9 @@ textarea {
 .dm-peers-scroll {
   display: flex;
   flex-direction: column;
-  gap: 18px;
   max-height: calc(100vh - 220px);
   overflow-y: auto;
   padding-right: 4px;
-}
-
-.dm-peers-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .dm-peers-list {
@@ -1421,6 +1414,30 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.dm-peer-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dm-peer-status-dot {
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: #cf3f4d;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.dm-peer-status-dot.is-online {
+  background: #2fa66a;
+}
+
+.dm-peer-status-dot.is-offline {
+  background: #cf3f4d;
 }
 
 .dm-peer-head strong {
