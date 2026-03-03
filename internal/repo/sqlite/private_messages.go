@@ -17,11 +17,11 @@ func NewPrivateMessageRepo(db *sql.DB) *PrivateMessageRepo {
 	return &PrivateMessageRepo{db: db}
 }
 
-func (r *PrivateMessageRepo) SavePrivateMessage(ctx context.Context, fromID, toID int64, body string, createdAt time.Time) (*domain.PrivateMessage, error) {
+func (r *PrivateMessageRepo) SavePrivateMessage(ctx context.Context, fromID, toID int64, body string, attachment *domain.Attachment, createdAt time.Time) (*domain.PrivateMessage, error) {
 	res, err := r.db.ExecContext(ctx, `
-        INSERT INTO private_messages (from_user_id, to_user_id, body, created_at)
-        VALUES (?, ?, ?, ?)
-    `, fromID, toID, body, timeToUnix(createdAt))
+        INSERT INTO private_messages (from_user_id, to_user_id, body, attachment_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    `, fromID, toID, body, nullableAttachmentID(attachment), timeToUnix(createdAt))
 	if err != nil {
 		return nil, err
 	}
@@ -36,6 +36,7 @@ func (r *PrivateMessageRepo) SavePrivateMessage(ctx context.Context, fromID, toI
 		FromUserID: fromID,
 		ToUserID:   toID,
 		Body:       body,
+		Attachment: attachment.Public(),
 		CreatedAt:  createdAt.UTC(),
 	}, nil
 }
@@ -50,9 +51,12 @@ func (r *PrivateMessageRepo) ListConversationBefore(ctx context.Context, userA, 
 
 func (r *PrivateMessageRepo) listConversation(ctx context.Context, userA, userB int64, limit int, beforeTs, beforeID int64, useCursor bool) ([]domain.PrivateMessage, error) {
 	query := `
-        SELECT pm.id, pm.from_user_id, u.username, u.display_name, pm.to_user_id, pm.body, pm.created_at
+        SELECT pm.id, pm.from_user_id, u.username, u.display_name, pm.to_user_id, pm.body,
+               a.id, a.mime, a.size,
+               pm.created_at
         FROM private_messages pm
         JOIN users u ON u.id = pm.from_user_id
+        LEFT JOIN attachments a ON a.id = pm.attachment_id
         WHERE (
                 (pm.from_user_id = ? AND pm.to_user_id = ?)
                 OR
@@ -83,10 +87,14 @@ func (r *PrivateMessageRepo) listConversation(ctx context.Context, userA, userB 
 		var msg domain.PrivateMessage
 		var created int64
 		var fromDisplayName sql.NullString
-		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.FromUsername, &fromDisplayName, &msg.ToUserID, &msg.Body, &created); err != nil {
+		var attachmentID sql.NullInt64
+		var attachmentMime sql.NullString
+		var attachmentSize sql.NullInt64
+		if err := rows.Scan(&msg.ID, &msg.FromUserID, &msg.FromUsername, &fromDisplayName, &msg.ToUserID, &msg.Body, &attachmentID, &attachmentMime, &attachmentSize, &created); err != nil {
 			return nil, err
 		}
 		msg.FromDisplayName = strings.TrimSpace(fromDisplayName.String)
+		msg.Attachment = attachmentFromNullableFields(attachmentID, attachmentMime, attachmentSize)
 		msg.CreatedAt = unixToTime(created)
 		messages = append(messages, msg)
 	}

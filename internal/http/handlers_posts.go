@@ -12,9 +12,10 @@ import (
 )
 
 type createPostRequest struct {
-	Title      string  `json:"title"`
-	Body       string  `json:"body"`
-	Categories []int64 `json:"categories"`
+	Title        string  `json:"title"`
+	Body         string  `json:"body"`
+	Categories   []int64 `json:"categories"`
+	AttachmentID *int64  `json:"attachmentId,omitempty"`
 }
 
 type createCommentRequest struct {
@@ -105,7 +106,7 @@ func (h *Handler) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	post, err := h.posts.CreatePost(r.Context(), userID, req.Title, req.Body, req.Categories)
+	post, err := h.posts.CreatePost(r.Context(), userID, req.Title, req.Body, req.Categories, req.AttachmentID)
 	if handleServiceError(w, err) {
 		return
 	}

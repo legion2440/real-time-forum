@@ -9,6 +9,7 @@ type PrivateMessage struct {
 	FromDisplayName string
 	ToUserID        int64
 	Body            string
+	Attachment      *Attachment
 	CreatedAt       time.Time
 }
 

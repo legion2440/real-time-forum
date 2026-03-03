@@ -11,25 +11,42 @@ import (
 )
 
 type PrivateMessageService struct {
-	users    repo.UserRepo
-	messages repo.PrivateMessageRepo
-	clock    clock.Clock
+	users       repo.UserRepo
+	messages    repo.PrivateMessageRepo
+	attachments *AttachmentService
+	clock       clock.Clock
 }
 
-func NewPrivateMessageService(users repo.UserRepo, messages repo.PrivateMessageRepo, clock clock.Clock) *PrivateMessageService {
+func NewPrivateMessageService(users repo.UserRepo, messages repo.PrivateMessageRepo, attachments *AttachmentService, clock clock.Clock) *PrivateMessageService {
 	return &PrivateMessageService{
-		users:    users,
-		messages: messages,
-		clock:    clock,
+		users:       users,
+		messages:    messages,
+		attachments: attachments,
+		clock:       clock,
 	}
 }
 
-func (s *PrivateMessageService) Send(ctx context.Context, fromID, toID int64, body string) (*domain.PrivateMessage, error) {
+func (s *PrivateMessageService) Send(ctx context.Context, fromID, toID int64, body string, attachmentID *int64) (*domain.PrivateMessage, error) {
 	body = strings.TrimSpace(body)
-	if fromID <= 0 || toID <= 0 || body == "" {
+	if fromID <= 0 || toID <= 0 {
 		return nil, ErrInvalidInput
 	}
 	if fromID == toID {
+		return nil, ErrInvalidInput
+	}
+	if attachmentID != nil && s.attachments == nil {
+		return nil, ErrInvalidInput
+	}
+
+	var attachment *domain.Attachment
+	if attachmentID != nil {
+		var err error
+		attachment, err = s.attachments.GetOwnedAttachment(ctx, fromID, attachmentID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if body == "" && attachment == nil {
 		return nil, ErrInvalidInput
 	}
 
@@ -40,7 +57,7 @@ func (s *PrivateMessageService) Send(ctx context.Context, fromID, toID int64, bo
 		return nil, err
 	}
 
-	return s.messages.SavePrivateMessage(ctx, fromID, toID, body, s.clock.Now())
+	return s.messages.SavePrivateMessage(ctx, fromID, toID, body, attachment, s.clock.Now())
 }
 
 func (s *PrivateMessageService) ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error) {

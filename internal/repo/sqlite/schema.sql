@@ -19,13 +19,26 @@ CREATE TABLE IF NOT EXISTS sessions (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  storage_key TEXT NOT NULL,
+  original_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
+  attachment_id INTEGER,
   created_at INTEGER NOT NULL,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -76,13 +89,9 @@ CREATE TABLE IF NOT EXISTS private_messages (
   from_user_id INTEGER NOT NULL,
   to_user_id INTEGER NOT NULL,
   body TEXT NOT NULL,
+  attachment_id INTEGER,
   created_at INTEGER NOT NULL,
   FOREIGN KEY(from_user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY(to_user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY(to_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE SET NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_private_messages_from_to_created_at
-  ON private_messages(from_user_id, to_user_id, created_at);
-
-CREATE INDEX IF NOT EXISTS idx_private_messages_to_from_created_at
-  ON private_messages(to_user_id, from_user_id, created_at);

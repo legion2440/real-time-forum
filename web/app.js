@@ -19,7 +19,11 @@ const state = {
   dmHasMore: false,
   dmOlderCursor: null,
   dmOlderLoadAt: 0,
+  dmDraftAttachment: null,
+  dmAttachmentUploading: false,
   dmReturnPath: "",
+  postDraftAttachment: null,
+  postAttachmentUploading: false,
   categories: [],
   filters: {
     cat: new Set(),
@@ -97,6 +101,32 @@ function getDisplayNameOrUsername(profile) {
   return displayName || username || "user";
 }
 
+function normalizeAttachment(attachment) {
+  if (!attachment || typeof attachment !== "object") return null;
+  const id = normalizeUserID(attachment.id);
+  const url = String(attachment.url || "").trim();
+  const mime = String(attachment.mime || "").trim();
+  const size = Number(attachment.size || 0);
+  if (!id || !url || !mime) return null;
+  return {
+    id,
+    url,
+    mime,
+    size: Number.isFinite(size) && size > 0 ? size : 0,
+  };
+}
+
+function getAttachmentNumericID(attachment) {
+  const id = Number.parseInt(normalizeUserID(attachment && attachment.id), 10);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function getAttachmentErrorMessage(err) {
+  if (err && err.status === 413) return "Image is too big (max 20MB)";
+  if (err && String(err.message || "").trim() === "Only JPEG/PNG/GIF allowed") return "Only JPEG/PNG/GIF allowed";
+  return err && err.message ? err.message : "Failed to upload image.";
+}
+
 function getProfileAgeValue(profile) {
   const age = Number(profile && profile.age);
   if (!Number.isFinite(age) || age <= 0) return "";
@@ -158,6 +188,8 @@ function clearDMState() {
   state.dmHasMore = false;
   state.dmOlderCursor = null;
   state.dmOlderLoadAt = 0;
+  state.dmDraftAttachment = null;
+  state.dmAttachmentUploading = false;
   state.dmReturnPath = "";
   syncDMView();
   syncDMPeersPanel();
@@ -171,6 +203,8 @@ function clearDMConversationState(preserveUnread = true) {
   state.dmHasMore = false;
   state.dmOlderCursor = null;
   state.dmOlderLoadAt = 0;
+  state.dmDraftAttachment = null;
+  state.dmAttachmentUploading = false;
   state.dmReturnPath = "";
   if (!preserveUnread) {
     state.dmUnreadByPeer = {};
@@ -190,6 +224,8 @@ function clearAuthenticatedState() {
   state.user = null;
   state.filters.mine = false;
   state.filters.liked = false;
+  state.postDraftAttachment = null;
+  state.postAttachmentUploading = false;
   clearDMState();
   clearPresenceState();
   closeRealtimeSocket();
@@ -295,6 +331,14 @@ function formatCompactCount(value) {
   return `${(n / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}b`;
 }
 
+function formatAttachmentSize(value) {
+  const size = Number(value ?? 0);
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${Math.round(size)} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size >= 10 * 1024 ? 0 : 1).replace(/\.0$/, "")} KB`;
+  return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1).replace(/\.0$/, "")} MB`;
+}
+
 function avatarMarkup(name, avatarUrl, size = "md") {
   const safeName = escapeHTML(name || "User");
   const initial = escapeHTML((String(name || "?").trim()[0] || "?").toUpperCase());
@@ -351,6 +395,11 @@ const INLINE_SVG_ICONS = {
   send: `
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" data-icon-name="send">
       <path d="M10 14L13 21L20 4L3 11L6.5 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>
+  `,
+  paperclip: `
+    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" data-icon-name="paperclip">
+      <path d="m8.5 12.5 6.4-6.4a3.2 3.2 0 1 1 4.5 4.5l-8.1 8.1a5.2 5.2 0 1 1-7.4-7.4l8.6-8.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
     </svg>
   `,
   logout: `
@@ -453,6 +502,7 @@ function icon(name) {
     back: "<",
     plus: "+",
     send: "^",
+    paperclip: "@",
     open: ">",
     like: "+",
     dislike: "-",
@@ -817,9 +867,14 @@ function renderDMViewContent() {
     <form id="dm-form" class="form-stack">
       <label class="field">
         <span>Message</span>
-        <textarea name="body" rows="3" required ${state.dmLoading ? "disabled" : ""}></textarea>
+        <textarea name="body" rows="3" ${state.dmLoading ? "disabled" : ""}></textarea>
       </label>
+      <input id="dm-attachment-input" type="file" accept="image/jpeg,image/png,image/gif" hidden ${state.dmLoading || state.dmAttachmentUploading ? "disabled" : ""} />
+      <div id="dm-attachment-preview">
+        ${renderAttachmentPreview(state.dmDraftAttachment, "dm")}
+      </div>
       <div class="form-actions">
+        <button class="btn btn-ghost btn-compact attachment-picker-btn" type="button" data-action="dm-pick-attachment" ${state.dmLoading || state.dmAttachmentUploading ? "disabled" : ""}>${icon("paperclip")} ${state.dmAttachmentUploading ? "Uploading..." : "Attach image"}</button>
         <button class="btn btn-primary" type="submit" ${state.dmLoading ? "disabled" : ""}>${icon("send")} Send</button>
       </div>
       <div id="dm-error"></div>
@@ -831,11 +886,14 @@ function renderDMMessage(message) {
   const isOutgoing = normalizeUserID(message?.from?.id) === getCurrentUserID();
   const fromName = String(message?.from?.name || getUserDisplayName(message?.from?.id)).trim() || "user";
   const directionClass = isOutgoing ? "dm-msg--outgoing" : "dm-msg--incoming";
+  const attachmentMarkup = renderImageAttachment(message && message.attachment, "dm-message-image", "Attached image");
+  const body = String(message && message.body ? message.body : "").trim();
   return `
     <div class="dm-msg ${directionClass}">
       <div class="dm-msg-body">
         <div class="dm-meta">${escapeHTML(fromName)} · ${escapeHTML(formatDate(message.createdAt))}</div>
-        <div class="dm-bubble">${escapeHTML(message.body)}</div>
+        ${attachmentMarkup ? `<div class="dm-attachment">${attachmentMarkup}</div>` : ""}
+        ${body ? `<div class="dm-bubble">${escapeHTML(body)}</div>` : ""}
       </div>
     </div>
   `;
@@ -848,7 +906,8 @@ function normalizeDMMessage(message) {
   const toID = normalizeUserID(message.to && message.to.id);
   const body = String(message.body || "").trim();
   const createdAt = message.createdAt || message.created_at || "";
-  if (!id || !fromID || !toID || !body || !createdAt) return null;
+  const attachment = normalizeAttachment(message.attachment);
+  if (!id || !fromID || !toID || (!body && !attachment) || !createdAt) return null;
 
   return {
     id,
@@ -860,6 +919,7 @@ function normalizeDMMessage(message) {
       id: toID,
     },
     body,
+    attachment,
     createdAt,
   };
 }
@@ -923,10 +983,45 @@ function syncDMView(options = {}) {
   bindDMThreadScroll(thread);
 }
 
+function syncDMComposerAttachmentPreview() {
+  const preview = document.getElementById("dm-attachment-preview");
+  if (!preview) return;
+  preview.innerHTML = renderAttachmentPreview(state.dmDraftAttachment, "dm");
+}
+
 function syncDMPeersPanel() {
   const panel = document.getElementById("dm-peers-panel");
   if (!panel) return;
   panel.innerHTML = renderDMPeersContent();
+}
+
+function syncPostAttachmentPreview() {
+  const preview = document.getElementById("post-attachment-preview");
+  if (!preview) return;
+  preview.innerHTML = renderAttachmentPreview(state.postDraftAttachment, "post");
+}
+
+function syncPostAttachmentControls() {
+  const picker = document.querySelector("[data-action='post-pick-attachment']");
+  if (picker) {
+    picker.disabled = !state.user || state.postAttachmentUploading;
+    picker.innerHTML = `${icon("paperclip")} ${state.postAttachmentUploading ? "Uploading..." : "Attach image"}`;
+  }
+  const input = document.getElementById("post-attachment-input");
+  if (input) {
+    input.disabled = !state.user || state.postAttachmentUploading;
+  }
+}
+
+async function uploadImageAttachment(file) {
+  const payload = new FormData();
+  payload.append("file", file);
+  return normalizeAttachment(
+    await apiFetch("/api/attachments", {
+      method: "POST",
+      body: payload,
+    })
+  );
 }
 
 function renderPresencePanel() {
@@ -1032,6 +1127,7 @@ function renderPostCard(post) {
   const author = getAuthorDisplay(post);
   const categoriesMarkup = categoryTags(post.categories);
   const viewsCount = post.views_count ?? post.views ?? 0;
+  const attachmentMarkup = renderImageAttachment(post && post.attachment, "post-card-image", post && post.title ? `${post.title} attachment` : "Post attachment");
   return `
     <article class="surface post-card">
       <div class="post-card-main">
@@ -1054,6 +1150,7 @@ function renderPostCard(post) {
           </div>
         </div>
         <p class="post-card-body">${escapeHTML(post.body)}</p>
+        ${attachmentMarkup ? `<div class="post-card-media">${attachmentMarkup}</div>` : ""}
         <div class="action-row" data-post="${post.id}">
           <button class="action-pill" type="button" data-action="like" aria-label="Like">${icon("like")} ${post.likes || 0}</button>
           <button class="action-pill" type="button" data-action="dislike" aria-label="Dislike">${icon("dislike")} ${post.dislikes || 0}</button>
@@ -1075,6 +1172,30 @@ function renderPostCard(post) {
         </div>
       </div>
     </article>
+  `;
+}
+
+function renderImageAttachment(attachment, className, alt) {
+  const media = normalizeAttachment(attachment);
+  if (!media) return "";
+  const classes = ["attachment-image"];
+  if (className) classes.push(className);
+  return `<img class="${classes.join(" ")}" src="${escapeHTML(media.url)}" alt="${escapeHTML(alt || "Attached image")}" loading="lazy" />`;
+}
+
+function renderAttachmentPreview(attachment, variant) {
+  const media = normalizeAttachment(attachment);
+  if (!media) return "";
+  const removeAction = variant === "post" ? "post-remove-attachment" : "dm-remove-attachment";
+  return `
+    <div class="attachment-preview-card">
+      ${renderImageAttachment(media, "attachment-preview-image", "Selected image")}
+      <div class="attachment-preview-meta">
+        <strong>${escapeHTML(media.mime)}</strong>
+        <span>${escapeHTML(formatAttachmentSize(media.size))}</span>
+      </div>
+      <button class="btn btn-ghost btn-compact" type="button" data-action="${removeAction}">Remove</button>
+    </div>
   `;
 }
 
@@ -1511,7 +1632,7 @@ async function loadPublicProfile(username) {
   return apiFetch(`/api/u/${encodeURIComponent(normalizeUsername(username))}`);
 }
 
-function sendDMMessage(body) {
+function sendDMMessage(body, attachment) {
   const peerID = normalizeUserID(state.dmPeerID);
   if (!peerID) {
     throw new Error("Select a user first");
@@ -1525,6 +1646,7 @@ function sendDMMessage(body) {
       type: "pm:send",
       to: { id: peerID },
       body: String(body || ""),
+      ...(getAttachmentNumericID(attachment) ? { attachmentId: normalizeUserID(attachment && attachment.id) } : {}),
     })
   );
 }
@@ -1575,6 +1697,9 @@ function handleRealtimeMessage(payload) {
       const thread = document.getElementById("dm-thread");
       const shouldStickBottom = isDMThreadNearBottom(thread);
       appendDMMessage(message);
+      if (normalizeUserID(message.from && message.from.id) === getCurrentUserID()) {
+        state.dmDraftAttachment = null;
+      }
       if (normalizeUserID(message.from && message.from.id) === state.dmPeerID) {
         state.dmUnreadByPeer[state.dmPeerID] = 0;
       }
@@ -1719,6 +1844,8 @@ async function dmView(params) {
   state.dmHasMore = false;
   state.dmOlderCursor = null;
   state.dmOlderLoadAt = 0;
+  state.dmDraftAttachment = null;
+  state.dmAttachmentUploading = false;
   if (state.dmPeerID) {
     state.dmUnreadByPeer[state.dmPeerID] = 0;
     try {
@@ -1732,6 +1859,8 @@ async function dmView(params) {
       state.dmHasMore = false;
       state.dmOlderCursor = null;
       state.dmOlderLoadAt = 0;
+      state.dmDraftAttachment = null;
+      state.dmAttachmentUploading = false;
     }
   }
 
@@ -2065,6 +2194,10 @@ async function newPostView() {
       <form id="post-form" class="form-stack">
         <label class="field"><span>Title</span><input type="text" name="title" required ${state.user ? "" : "disabled"} /></label>
         <label class="field"><span>Body</span><textarea name="body" required ${state.user ? "" : "disabled"}></textarea></label>
+        <input id="post-attachment-input" type="file" accept="image/jpeg,image/png,image/gif" hidden ${state.user && !state.postAttachmentUploading ? "" : "disabled"} />
+        <div id="post-attachment-preview">
+          ${renderAttachmentPreview(state.postDraftAttachment, "post")}
+        </div>
         <div class="field">
           <span>Categories</span>
           <div class="category-grid">
@@ -2072,6 +2205,7 @@ async function newPostView() {
           </div>
         </div>
         <div class="form-actions">
+          <button class="btn btn-ghost btn-compact attachment-picker-btn" type="button" data-action="post-pick-attachment" ${state.user && !state.postAttachmentUploading ? "" : "disabled"}>${icon("paperclip")} ${state.postAttachmentUploading ? "Uploading..." : "Attach image"}</button>
           <button class="btn btn-primary" type="submit" ${state.user ? "" : "disabled"}>${icon("send")} Publish</button>
           <a class="btn btn-ghost btn-cancel" data-link href="/">Cancel</a>
         </div>
@@ -2084,10 +2218,16 @@ async function newPostView() {
     html: renderLayout({ mode: "new", hideHeading: true, content }),
     onMount: () => {
       bindHeaderActions();
+      syncPostAttachmentControls();
+      syncPostAttachmentPreview();
       const form = document.getElementById("post-form");
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         if (!state.user) return;
+        if (state.postAttachmentUploading) {
+          document.getElementById("post-error").innerHTML = renderNotice("Image is still uploading.");
+          return;
+        }
         const data = new FormData(form);
         const selectedCategories = data
           .getAll("categories")
@@ -2104,8 +2244,11 @@ async function newPostView() {
               title: data.get("title"),
               body: data.get("body"),
               categories: selectedCategories,
+              ...(getAttachmentNumericID(state.postDraftAttachment) ? { attachmentId: getAttachmentNumericID(state.postDraftAttachment) } : {}),
             }),
           });
+          state.postDraftAttachment = null;
+          state.postAttachmentUploading = false;
           navigate(`/post/${post.id}`);
         } catch (err) {
           if (err && err.handled) return;
@@ -2212,6 +2355,7 @@ async function postView(params) {
   const author = getAuthorDisplay(post);
   const categoriesMarkup = categoryTags(post.categories);
   const viewsCount = post.views_count ?? post.views ?? 0;
+  const attachmentMarkup = renderImageAttachment(post && post.attachment, "post-detail-image", post && post.title ? `${post.title} attachment` : "Post attachment");
 
   const content = `
     <section class="post-hero surface">
@@ -2242,6 +2386,7 @@ async function postView(params) {
                 </div>
               </div>
               <p class="hero-body">${escapeHTML(post.body)}</p>
+              ${attachmentMarkup ? `<div class="post-detail-media">${attachmentMarkup}</div>` : ""}
               <div class="action-row" data-post="${post.id}">
                 <button class="action-pill" type="button" data-action="like" aria-label="Like">${icon("like")} ${post.likes || 0}</button>
                 <button class="action-pill" type="button" data-action="dislike" aria-label="Dislike">${icon("dislike")} ${post.dislikes || 0}</button>
@@ -2385,6 +2530,12 @@ async function router() {
     state.dmHasMore = false;
     state.dmOlderCursor = null;
     state.dmOlderLoadAt = 0;
+    state.dmDraftAttachment = null;
+    state.dmAttachmentUploading = false;
+  }
+  if (location.pathname !== "/new") {
+    state.postDraftAttachment = null;
+    state.postAttachmentUploading = false;
   }
   try {
     const view = await match.route.view(match.params || {});
@@ -2423,6 +2574,38 @@ document.addEventListener("click", (e) => {
   if (dmClose) {
     e.preventDefault();
     closeDMConversation();
+    return;
+  }
+
+  const dmPickAttachment = e.target.closest("[data-action='dm-pick-attachment']");
+  if (dmPickAttachment) {
+    e.preventDefault();
+    const input = document.getElementById("dm-attachment-input");
+    if (input) input.click();
+    return;
+  }
+
+  const dmRemoveAttachment = e.target.closest("[data-action='dm-remove-attachment']");
+  if (dmRemoveAttachment) {
+    e.preventDefault();
+    state.dmDraftAttachment = null;
+    syncDMComposerAttachmentPreview();
+    return;
+  }
+
+  const postPickAttachment = e.target.closest("[data-action='post-pick-attachment']");
+  if (postPickAttachment) {
+    e.preventDefault();
+    const input = document.getElementById("post-attachment-input");
+    if (input) input.click();
+    return;
+  }
+
+  const postRemoveAttachment = e.target.closest("[data-action='post-remove-attachment']");
+  if (postRemoveAttachment) {
+    e.preventDefault();
+    state.postDraftAttachment = null;
+    syncPostAttachmentPreview();
     return;
   }
 
@@ -2485,15 +2668,20 @@ document.addEventListener("submit", (e) => {
   const data = new FormData(form);
   const body = String(data.get("body") || "").trim();
   const errorBox = document.getElementById("dm-error");
+  const attachment = state.dmDraftAttachment;
 
   if (errorBox) errorBox.innerHTML = "";
-  if (!body) {
-    if (errorBox) errorBox.innerHTML = renderNotice("Message is required.");
+  if (state.dmAttachmentUploading) {
+    if (errorBox) errorBox.innerHTML = renderNotice("Image is still uploading.");
+    return;
+  }
+  if (!body && !attachment) {
+    if (errorBox) errorBox.innerHTML = renderNotice("Message or image is required.");
     return;
   }
 
   try {
-    sendDMMessage(body);
+    sendDMMessage(body, attachment);
     form.reset();
   } catch (err) {
     if (errorBox) {
@@ -2501,6 +2689,58 @@ document.addEventListener("submit", (e) => {
       return;
     }
     alert(err && err.message ? err.message : "Failed to send message.");
+  }
+});
+
+document.addEventListener("change", async (e) => {
+  const dmInput = e.target.closest("#dm-attachment-input");
+  if (dmInput) {
+    const file = dmInput.files && dmInput.files[0];
+    const errorBox = document.getElementById("dm-error");
+    if (errorBox) errorBox.innerHTML = "";
+    if (!file) return;
+
+    state.dmAttachmentUploading = true;
+    syncDMView({ scrollMode: "preserve" });
+    try {
+      state.dmDraftAttachment = await uploadImageAttachment(file);
+      syncDMComposerAttachmentPreview();
+    } catch (err) {
+      state.dmDraftAttachment = null;
+      if (errorBox) {
+        errorBox.innerHTML = renderNotice(getAttachmentErrorMessage(err));
+      }
+    } finally {
+      dmInput.value = "";
+      state.dmAttachmentUploading = false;
+      syncDMView({ scrollMode: "preserve" });
+    }
+    return;
+  }
+
+  const postInput = e.target.closest("#post-attachment-input");
+  if (!postInput) return;
+
+  const file = postInput.files && postInput.files[0];
+  const errorBox = document.getElementById("post-error");
+  if (errorBox) errorBox.innerHTML = "";
+  if (!file) return;
+
+  state.postAttachmentUploading = true;
+  syncPostAttachmentControls();
+  syncPostAttachmentPreview();
+  try {
+    state.postDraftAttachment = await uploadImageAttachment(file);
+  } catch (err) {
+    state.postDraftAttachment = null;
+    if (errorBox) {
+      errorBox.innerHTML = renderNotice(getAttachmentErrorMessage(err));
+    }
+  } finally {
+    postInput.value = "";
+    state.postAttachmentUploading = false;
+    syncPostAttachmentControls();
+    syncPostAttachmentPreview();
   }
 });
 

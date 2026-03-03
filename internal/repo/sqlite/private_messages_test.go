@@ -25,7 +25,7 @@ func TestPrivateMessageRepo_ListPeersOrdersByLastMessageThenName(t *testing.T) {
 	}
 
 	createdAt := time.Unix(1700000000, 0).UTC()
-	if _, err := messages.SavePrivateMessage(ctx, activePeerID, meID, "hello", createdAt); err != nil {
+	if _, err := messages.SavePrivateMessage(ctx, activePeerID, meID, "hello", nil, createdAt); err != nil {
 		t.Fatalf("save message: %v", err)
 	}
 
@@ -118,19 +118,19 @@ func TestPrivateMessageRepo_ListConversationBeforeReturnsOlderMessages(t *testin
 	meID := mustCreateUser(t, ctx, users, "me4@example.com", "me_user4")
 	peerID := mustCreateUser(t, ctx, users, "peer4@example.com", "peer_user4")
 
-	first, err := messages.SavePrivateMessage(ctx, meID, peerID, "first", time.Unix(1700000000, 0).UTC())
+	first, err := messages.SavePrivateMessage(ctx, meID, peerID, "first", nil, time.Unix(1700000000, 0).UTC())
 	if err != nil {
 		t.Fatalf("save first message: %v", err)
 	}
-	second, err := messages.SavePrivateMessage(ctx, peerID, meID, "second", time.Unix(1700000010, 0).UTC())
+	second, err := messages.SavePrivateMessage(ctx, peerID, meID, "second", nil, time.Unix(1700000010, 0).UTC())
 	if err != nil {
 		t.Fatalf("save second message: %v", err)
 	}
-	third, err := messages.SavePrivateMessage(ctx, meID, peerID, "third", time.Unix(1700000010, 0).UTC())
+	third, err := messages.SavePrivateMessage(ctx, meID, peerID, "third", nil, time.Unix(1700000010, 0).UTC())
 	if err != nil {
 		t.Fatalf("save third message: %v", err)
 	}
-	if _, err := messages.SavePrivateMessage(ctx, peerID, meID, "fourth", time.Unix(1700000020, 0).UTC()); err != nil {
+	if _, err := messages.SavePrivateMessage(ctx, peerID, meID, "fourth", nil, time.Unix(1700000020, 0).UTC()); err != nil {
 		t.Fatalf("save fourth message: %v", err)
 	}
 

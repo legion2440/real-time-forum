@@ -71,7 +71,7 @@ func newDMHandler(t *testing.T) (*Handler, *service.AuthService, *sqlite.Private
 	)
 	pms := sqlite.NewPrivateMessageRepo(db)
 
-	return NewHandler(auth, nil, service.NewPrivateMessageService(users, pms, fixedClock{t: time.Unix(1700000000, 0)})), auth, pms, func() { _ = db.Close() }
+	return NewHandler(auth, nil, service.NewPrivateMessageService(users, pms, nil, fixedClock{t: time.Unix(1700000000, 0)})), auth, pms, func() { _ = db.Close() }
 }
 
 func TestDMConversationCursorReturnsOlderMessagesAscending(t *testing.T) {
@@ -82,19 +82,19 @@ func TestDMConversationCursorReturnsOlderMessagesAscending(t *testing.T) {
 	peerID := mustRegisterUser(t, auth, "peer-dm@example.com", "peer_dm")
 	token := mustLoginUser(t, auth, "me-dm@example.com")
 
-	first, err := pms.SavePrivateMessage(context.Background(), meID, peerID, "first", time.Unix(1700000000, 0).UTC())
+	first, err := pms.SavePrivateMessage(context.Background(), meID, peerID, "first", nil, time.Unix(1700000000, 0).UTC())
 	if err != nil {
 		t.Fatalf("save first message: %v", err)
 	}
-	second, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "second", time.Unix(1700000010, 0).UTC())
+	second, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "second", nil, time.Unix(1700000010, 0).UTC())
 	if err != nil {
 		t.Fatalf("save second message: %v", err)
 	}
-	third, err := pms.SavePrivateMessage(context.Background(), meID, peerID, "third", time.Unix(1700000010, 0).UTC())
+	third, err := pms.SavePrivateMessage(context.Background(), meID, peerID, "third", nil, time.Unix(1700000010, 0).UTC())
 	if err != nil {
 		t.Fatalf("save third message: %v", err)
 	}
-	if _, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "fourth", time.Unix(1700000020, 0).UTC()); err != nil {
+	if _, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "fourth", nil, time.Unix(1700000020, 0).UTC()); err != nil {
 		t.Fatalf("save fourth message: %v", err)
 	}
 

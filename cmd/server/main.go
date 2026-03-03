@@ -32,13 +32,18 @@ func main() {
 	categoryRepo := sqlite.NewCategoryRepo(db)
 	reactionRepo := sqlite.NewReactionRepo(db)
 	privateMessageRepo := sqlite.NewPrivateMessageRepo(db)
+	attachmentRepo := sqlite.NewAttachmentRepo(db)
 
 	clock := clock.RealClock{}
+	attachmentService, err := service.NewAttachmentService(attachmentRepo, clock, id.UUIDGenerator{}, "var/uploads")
+	if err != nil {
+		log.Fatalf("attachments init: %v", err)
+	}
 	authService := service.NewAuthService(userRepo, sessionRepo, clock, id.UUIDGenerator{}, 24*time.Hour)
-	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, clock)
-	privateMessageService := service.NewPrivateMessageService(userRepo, privateMessageRepo, clock)
+	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, attachmentService, clock)
+	privateMessageService := service.NewPrivateMessageService(userRepo, privateMessageRepo, attachmentService, clock)
 
-	handler := httpserver.NewHandler(authService, postService, privateMessageService)
+	handler := httpserver.NewHandler(authService, postService, privateMessageService, attachmentService)
 
 	srv := &http.Server{
 		Addr:    ":8080",

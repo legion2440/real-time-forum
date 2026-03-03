@@ -39,9 +39,10 @@ type helloUser struct {
 }
 
 type pmSendRequest struct {
-	Type string            `json:"type"`
-	To   privateMessageRef `json:"to"`
-	Body string            `json:"body"`
+	Type         string            `json:"type"`
+	To           privateMessageRef `json:"to"`
+	Body         string            `json:"body"`
+	AttachmentID string            `json:"attachmentId,omitempty"`
 }
 
 type privateMessageRef struct {
@@ -50,16 +51,24 @@ type privateMessageRef struct {
 }
 
 type pmNewMessage struct {
-	ID        string            `json:"id"`
-	From      privateMessageRef `json:"from"`
-	To        privateMessageRef `json:"to"`
-	Body      string            `json:"body"`
-	CreatedAt time.Time         `json:"createdAt"`
+	ID         string                  `json:"id"`
+	From       privateMessageRef       `json:"from"`
+	To         privateMessageRef       `json:"to"`
+	Body       string                  `json:"body"`
+	Attachment *privateMessageMediaRef `json:"attachment,omitempty"`
+	CreatedAt  time.Time               `json:"createdAt"`
 }
 
 type pmNewEnvelope struct {
 	Type    string       `json:"type"`
 	Message pmNewMessage `json:"message"`
+}
+
+type privateMessageMediaRef struct {
+	ID   string `json:"id"`
+	URL  string `json:"url"`
+	Mime string `json:"mime"`
+	Size int64  `json:"size"`
 }
 
 type Client struct {
@@ -188,11 +197,19 @@ func (c *Client) handlePrivateMessageSend(raw []byte) {
 	if err != nil || toID <= 0 {
 		return
 	}
+	var attachmentID *int64
+	if rawAttachmentID := strings.TrimSpace(req.AttachmentID); rawAttachmentID != "" {
+		parsedAttachmentID, err := strconv.ParseInt(rawAttachmentID, 10, 64)
+		if err != nil || parsedAttachmentID <= 0 {
+			return
+		}
+		attachmentID = &parsedAttachmentID
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	msg, err := c.pms.Send(ctx, c.userID, toID, req.Body)
+	msg, err := c.pms.Send(ctx, c.userID, toID, req.Body, attachmentID)
 	if err != nil {
 		return
 	}
@@ -276,8 +293,21 @@ func marshalPrivateMessageEvent(msg domain.PrivateMessage, senderName string) ([
 			To: privateMessageRef{
 				ID: strconv.FormatInt(msg.ToUserID, 10),
 			},
-			Body:      msg.Body,
-			CreatedAt: msg.CreatedAt.UTC(),
+			Body:       msg.Body,
+			Attachment: newPrivateMessageMediaRef(msg.Attachment),
+			CreatedAt:  msg.CreatedAt.UTC(),
 		},
 	})
+}
+
+func newPrivateMessageMediaRef(attachment *domain.Attachment) *privateMessageMediaRef {
+	if attachment == nil || attachment.ID <= 0 {
+		return nil
+	}
+	return &privateMessageMediaRef{
+		ID:   strconv.FormatInt(attachment.ID, 10),
+		URL:  strings.TrimSpace(attachment.URL),
+		Mime: strings.TrimSpace(attachment.Mime),
+		Size: attachment.Size,
+	}
 }

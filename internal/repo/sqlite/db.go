@@ -47,6 +47,10 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureAttachmentsTable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureUserDisplayNameColumn(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -71,7 +75,19 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensurePostAttachmentColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensurePrivateMessageAttachmentColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureUserDisplayNameIndex(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureAttachmentIndexes(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -103,6 +119,22 @@ func ensureCommentParentColumn(db *sql.DB) error {
 	}
 
 	_, err = db.Exec("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
+	return err
+}
+
+func ensureAttachmentsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS attachments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL,
+			mime TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			storage_key TEXT NOT NULL,
+			original_name TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+		)
+	`)
 	return err
 }
 
@@ -184,6 +216,32 @@ func ensureUserGenderColumn(db *sql.DB) error {
 	return err
 }
 
+func ensurePostAttachmentColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "posts", "attachment_id")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE posts ADD COLUMN attachment_id INTEGER")
+	return err
+}
+
+func ensurePrivateMessageAttachmentColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "private_messages", "attachment_id")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE private_messages ADD COLUMN attachment_id INTEGER")
+	return err
+}
+
 func ensureUserDisplayNameIndex(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name_nocase
@@ -191,6 +249,22 @@ func ensureUserDisplayNameIndex(db *sql.DB) error {
 		WHERE display_name IS NOT NULL AND display_name <> ''
 	`)
 	return err
+}
+
+func ensureAttachmentIndexes(db *sql.DB) error {
+	statements := []string{
+		`CREATE INDEX IF NOT EXISTS idx_attachments_owner_user_id ON attachments(owner_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_private_messages_from_to_created_at ON private_messages(from_user_id, to_user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_private_messages_to_from_created_at ON private_messages(to_user_id, from_user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_private_messages_attachment_id ON private_messages(attachment_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_posts_attachment_id ON posts(attachment_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {

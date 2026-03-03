@@ -910,6 +910,19 @@ textarea {
   word-break: break-word;
 }
 
+.post-card-media,
+.post-detail-media {
+  margin-top: 14px;
+}
+
+.post-card-image,
+.post-detail-image {
+  max-width: 100%;
+  max-height: 420px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-2) 92%, var(--bg-elevated));
+}
+
 .tag-row {
   display: flex;
   flex-wrap: wrap;
@@ -1122,6 +1135,49 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.attachment-picker-btn {
+  align-self: flex-start;
+}
+
+.attachment-preview-card {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow-soft);
+}
+
+.attachment-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.attachment-preview-meta strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.attachment-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  border-radius: 14px;
+}
+
+.attachment-preview-image {
+  max-width: min(100%, 320px);
+  max-height: 220px;
+  border: 1px solid var(--line);
 }
 
 .category-grid {
@@ -1551,6 +1607,18 @@ textarea {
   white-space: pre-wrap;
   word-break: break-word;
   box-shadow: var(--shadow-soft);
+}
+
+.dm-attachment {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.dm-message-image {
+  max-width: min(320px, 100%);
+  max-height: 320px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-2) 92%, var(--bg-elevated));
 }
 
 .dm-msg--outgoing .dm-bubble {

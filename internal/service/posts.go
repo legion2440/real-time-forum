@@ -11,20 +11,22 @@ import (
 )
 
 type PostService struct {
-	posts      repo.PostRepo
-	comments   repo.CommentRepo
-	categories repo.CategoryRepo
-	reactions  repo.ReactionRepo
-	clock      clock.Clock
+	posts       repo.PostRepo
+	comments    repo.CommentRepo
+	categories  repo.CategoryRepo
+	reactions   repo.ReactionRepo
+	attachments *AttachmentService
+	clock       clock.Clock
 }
 
-func NewPostService(posts repo.PostRepo, comments repo.CommentRepo, categories repo.CategoryRepo, reactions repo.ReactionRepo, clock clock.Clock) *PostService {
+func NewPostService(posts repo.PostRepo, comments repo.CommentRepo, categories repo.CategoryRepo, reactions repo.ReactionRepo, attachments *AttachmentService, clock clock.Clock) *PostService {
 	return &PostService{
-		posts:      posts,
-		comments:   comments,
-		categories: categories,
-		reactions:  reactions,
-		clock:      clock,
+		posts:       posts,
+		comments:    comments,
+		categories:  categories,
+		reactions:   reactions,
+		attachments: attachments,
+		clock:       clock,
 	}
 }
 
@@ -68,7 +70,7 @@ func (s *PostService) ListComments(ctx context.Context, postID int64, filter dom
 	return s.comments.ListByPost(ctx, postID, filter)
 }
 
-func (s *PostService) CreatePost(ctx context.Context, userID int64, title, body string, categoryIDs []int64) (*domain.Post, error) {
+func (s *PostService) CreatePost(ctx context.Context, userID int64, title, body string, categoryIDs []int64, attachmentID *int64) (*domain.Post, error) {
 	title = strings.TrimSpace(title)
 	body = strings.TrimSpace(body)
 	if title == "" || body == "" {
@@ -77,12 +79,25 @@ func (s *PostService) CreatePost(ctx context.Context, userID int64, title, body 
 	if len(categoryIDs) == 0 {
 		return nil, ErrInvalidInput
 	}
+	if attachmentID != nil && s.attachments == nil {
+		return nil, ErrInvalidInput
+	}
+
+	var attachment *domain.Attachment
+	if attachmentID != nil {
+		var err error
+		attachment, err = s.attachments.GetOwnedAttachment(ctx, userID, attachmentID)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	post := &domain.Post{
-		UserID:    userID,
-		Title:     title,
-		Body:      body,
-		CreatedAt: s.clock.Now(),
+		UserID:     userID,
+		Title:      title,
+		Body:       body,
+		Attachment: attachment,
+		CreatedAt:  s.clock.Now(),
 	}
 
 	id, err := s.posts.Create(ctx, post, categoryIDs)

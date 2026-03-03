@@ -14,26 +14,40 @@ import (
 const sessionCookieName = "forum_session"
 
 type Handler struct {
-	auth  *service.AuthService
-	posts *service.PostService
-	pms   *service.PrivateMessageService
-	hub   *realtimews.Hub
+	auth        *service.AuthService
+	posts       *service.PostService
+	pms         *service.PrivateMessageService
+	attachments *service.AttachmentService
+	hub         *realtimews.Hub
 }
 
-func NewHandler(auth *service.AuthService, posts *service.PostService, pms ...*service.PrivateMessageService) *Handler {
+func NewHandler(auth *service.AuthService, posts *service.PostService, services ...any) *Handler {
 	hub := realtimews.NewHub()
 	go hub.Run()
 
-	var pmService *service.PrivateMessageService
-	if len(pms) > 0 {
-		pmService = pms[0]
+	var (
+		pmService         *service.PrivateMessageService
+		attachmentService *service.AttachmentService
+	)
+	for _, dependency := range services {
+		switch value := dependency.(type) {
+		case *service.PrivateMessageService:
+			if pmService == nil {
+				pmService = value
+			}
+		case *service.AttachmentService:
+			if attachmentService == nil {
+				attachmentService = value
+			}
+		}
 	}
 
 	return &Handler{
-		auth:  auth,
-		posts: posts,
-		pms:   pmService,
-		hub:   hub,
+		auth:        auth,
+		posts:       posts,
+		pms:         pmService,
+		attachments: attachmentService,
+		hub:         hub,
 	}
 }
 
@@ -46,6 +60,8 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/me", h.handleMe)
 	apiMux.HandleFunc("/api/u/", h.handlePublicProfile)
 	apiMux.HandleFunc("/api/users", h.handleUsers)
+	apiMux.HandleFunc("/api/attachments", h.handleAttachments)
+	apiMux.HandleFunc("/api/attachments/", h.handleAttachmentDownload)
 	apiMux.HandleFunc("/api/dm/peers", h.handleDMPeers)
 	apiMux.HandleFunc("/api/dm/", h.handleDMConversation)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)

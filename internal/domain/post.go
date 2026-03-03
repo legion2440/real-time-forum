@@ -9,17 +9,18 @@ type UserRef struct {
 }
 
 type Post struct {
-	ID            int64      `json:"id"`
-	UserID        int64      `json:"user_id"`
-	Author        UserRef    `json:"author"`
-	Title         string     `json:"title"`
-	Body          string     `json:"body"`
-	CreatedAt     time.Time  `json:"created_at"`
-	Categories    []Category `json:"categories,omitempty"`
-	Likes         int        `json:"likes"`
-	Dislikes      int        `json:"dislikes"`
-	CommentsCount int        `json:"comments_count"`
-	Comments      []Comment  `json:"comments,omitempty"`
+	ID            int64       `json:"id"`
+	UserID        int64       `json:"user_id"`
+	Author        UserRef     `json:"author"`
+	Title         string      `json:"title"`
+	Body          string      `json:"body"`
+	Attachment    *Attachment `json:"attachment,omitempty"`
+	CreatedAt     time.Time   `json:"created_at"`
+	Categories    []Category  `json:"categories,omitempty"`
+	Likes         int         `json:"likes"`
+	Dislikes      int         `json:"dislikes"`
+	CommentsCount int         `json:"comments_count"`
+	Comments      []Comment   `json:"comments,omitempty"`
 }
 
 type PostFilter struct {

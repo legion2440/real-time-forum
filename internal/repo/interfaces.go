@@ -49,8 +49,14 @@ type ReactionRepo interface {
 	ReactComment(ctx context.Context, commentID, userID int64, value int) error
 }
 
+type AttachmentRepo interface {
+	Create(ctx context.Context, ownerUserID int64, mime string, size int64, storageKey, originalName string, createdAt time.Time) (int64, error)
+	GetByID(ctx context.Context, id int64) (*domain.Attachment, error)
+	GetUsage(ctx context.Context, id int64) (domain.AttachmentUsage, error)
+}
+
 type PrivateMessageRepo interface {
-	SavePrivateMessage(ctx context.Context, fromID, toID int64, body string, createdAt time.Time) (*domain.PrivateMessage, error)
+	SavePrivateMessage(ctx context.Context, fromID, toID int64, body string, attachment *domain.Attachment, createdAt time.Time) (*domain.PrivateMessage, error)
 	ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error)
 	ListConversationBefore(ctx context.Context, userA, userB, beforeTs, beforeID int64, limit int) ([]domain.PrivateMessage, error)
 	ListPeers(ctx context.Context, userID int64) ([]domain.PrivateMessagePeer, error)

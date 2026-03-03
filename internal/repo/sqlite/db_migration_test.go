@@ -31,6 +31,22 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 			created_at INTEGER NOT NULL
 		);
 
+		CREATE TABLE posts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+
+		CREATE TABLE private_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			from_user_id INTEGER NOT NULL,
+			to_user_id INTEGER NOT NULL,
+			body TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+
 		INSERT INTO users (email, username, pass_hash, created_at)
 		VALUES ('legacy@example.com', 'legacy-user', 'hash', 1700000000);
 	`)
@@ -99,6 +115,29 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 	if !hasGender {
 		t.Fatal("expected users.gender column to be added")
 	}
+	hasAttachmentsTable, err := tableExists(db, "attachments")
+	if err != nil {
+		t.Fatalf("check attachments table: %v", err)
+	}
+	if !hasAttachmentsTable {
+		t.Fatal("expected attachments table to be added")
+	}
+
+	hasPostAttachment, err := tableHasColumn(db, "posts", "attachment_id")
+	if err != nil {
+		t.Fatalf("check posts.attachment_id column: %v", err)
+	}
+	if !hasPostAttachment {
+		t.Fatal("expected posts.attachment_id column to be added")
+	}
+
+	hasPrivateMessageAttachment, err := tableHasColumn(db, "private_messages", "attachment_id")
+	if err != nil {
+		t.Fatalf("check private_messages.attachment_id column: %v", err)
+	}
+	if !hasPrivateMessageAttachment {
+		t.Fatal("expected private_messages.attachment_id column to be added")
+	}
 
 	userRepo := NewUserRepo(db)
 	user, err := userRepo.GetByUsername(context.Background(), "legacy-user")
@@ -111,4 +150,16 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 	if user.FirstName != "" || user.LastName != "" || user.Age != 0 || user.Gender != "" {
 		t.Fatalf("expected new profile fields to keep defaults, got %+v", user)
 	}
+}
+
+func tableExists(db *sql.DB, tableName string) (bool, error) {
+	row := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, tableName)
+	var marker int
+	if err := row.Scan(&marker); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return marker == 1, nil
 }

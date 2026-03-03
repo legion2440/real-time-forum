@@ -15,11 +15,12 @@ type privateMessageUserDTO struct {
 }
 
 type privateMessageDTO struct {
-	ID        string                `json:"id"`
-	From      privateMessageUserDTO `json:"from"`
-	To        privateMessageUserDTO `json:"to"`
-	Body      string                `json:"body"`
-	CreatedAt time.Time             `json:"createdAt"`
+	ID         string                 `json:"id"`
+	From       privateMessageUserDTO  `json:"from"`
+	To         privateMessageUserDTO  `json:"to"`
+	Body       string                 `json:"body"`
+	Attachment *attachmentResponseDTO `json:"attachment,omitempty"`
+	CreatedAt  time.Time              `json:"createdAt"`
 }
 
 type privateMessagePeerDTO struct {
@@ -153,7 +154,8 @@ func newPrivateMessageDTO(msg domain.PrivateMessage) privateMessageDTO {
 		To: privateMessageUserDTO{
 			ID: strconv.FormatInt(msg.ToUserID, 10),
 		},
-		Body:      msg.Body,
-		CreatedAt: msg.CreatedAt.UTC(),
+		Body:       msg.Body,
+		Attachment: newAttachmentResponseDTO(msg.Attachment),
+		CreatedAt:  msg.CreatedAt.UTC(),
 	}
 }
