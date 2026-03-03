@@ -99,9 +99,36 @@ func (h *Handler) handleDMConversation(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	messages, err := h.pms.ListConversationLast(r.Context(), userID, peerID, limit)
-	if handleServiceError(w, err) {
+	rawBeforeTs := strings.TrimSpace(r.URL.Query().Get("beforeTs"))
+	rawBeforeID := strings.TrimSpace(r.URL.Query().Get("beforeID"))
+	hasBeforeTs := rawBeforeTs != ""
+	hasBeforeID := rawBeforeID != ""
+	if hasBeforeTs != hasBeforeID {
+		writeError(w, http.StatusBadRequest, "invalid input")
 		return
+	}
+
+	var messages []domain.PrivateMessage
+	if hasBeforeTs {
+		beforeTs, err := strconv.ParseInt(rawBeforeTs, 10, 64)
+		if err != nil || beforeTs <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid input")
+			return
+		}
+		beforeID, err := strconv.ParseInt(rawBeforeID, 10, 64)
+		if err != nil || beforeID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid input")
+			return
+		}
+		messages, err = h.pms.ListConversationBefore(r.Context(), userID, peerID, beforeTs, beforeID, limit)
+		if handleServiceError(w, err) {
+			return
+		}
+	} else {
+		messages, err = h.pms.ListConversationLast(r.Context(), userID, peerID, limit)
+		if handleServiceError(w, err) {
+			return
+		}
 	}
 
 	response := make([]privateMessageDTO, 0, len(messages))

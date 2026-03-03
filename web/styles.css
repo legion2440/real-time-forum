@@ -1346,6 +1346,12 @@ textarea {
   min-width: 0;
 }
 
+.dm-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .dm-peers {
   display: flex;
   flex-direction: column;
@@ -1480,6 +1486,25 @@ textarea {
   flex-direction: column;
   gap: 10px;
   padding: 4px 0;
+  min-height: 220px;
+  max-height: calc(100vh - 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.dm-thread-status {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  align-self: center;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  box-shadow: var(--shadow-soft);
 }
 
 .dm-thread-empty .empty-box {

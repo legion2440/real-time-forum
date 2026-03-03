@@ -1,6 +1,8 @@
 const app = document.getElementById("app");
 const THEME_KEY = "theme";
 const DEBUG_WS = false;
+const DM_HISTORY_PAGE_SIZE = 10;
+const DM_HISTORY_THROTTLE_MS = 400;
 
 const state = {
   user: null,
@@ -13,6 +15,10 @@ const state = {
   dmMessages: [],
   dmUnreadByPeer: {},
   dmLoading: false,
+  dmLoadingOlder: false,
+  dmHasMore: false,
+  dmOlderCursor: null,
+  dmOlderLoadAt: 0,
   dmReturnPath: "",
   categories: [],
   filters: {
@@ -148,6 +154,10 @@ function clearDMState() {
   state.dmMessages = [];
   state.dmUnreadByPeer = {};
   state.dmLoading = false;
+  state.dmLoadingOlder = false;
+  state.dmHasMore = false;
+  state.dmOlderCursor = null;
+  state.dmOlderLoadAt = 0;
   state.dmReturnPath = "";
   syncDMView();
   syncDMPeersPanel();
@@ -157,6 +167,10 @@ function clearDMConversationState(preserveUnread = true) {
   state.dmPeerID = "";
   state.dmMessages = [];
   state.dmLoading = false;
+  state.dmLoadingOlder = false;
+  state.dmHasMore = false;
+  state.dmOlderCursor = null;
+  state.dmOlderLoadAt = 0;
   state.dmReturnPath = "";
   if (!preserveUnread) {
     state.dmUnreadByPeer = {};
@@ -794,7 +808,8 @@ function renderDMViewContent() {
       state.dmLoading
         ? `<div class="side-note">Loading conversation...</div>`
         : `
-          <div class="dm-thread">
+          <div id="dm-thread" class="dm-thread">
+            ${state.dmLoadingOlder ? `<div class="dm-thread-status">Loading older messages...</div>` : ""}
             ${messages.length ? messages.map(renderDMMessage).join("") : `<div class="dm-thread-empty">${renderEmpty("No messages yet", "Start the conversation.")}</div>`}
           </div>
         `
@@ -849,10 +864,63 @@ function normalizeDMMessage(message) {
   };
 }
 
-function syncDMView() {
+function getDMMessageTimestampSeconds(message) {
+  const created = new Date(message && message.createdAt);
+  if (!Number.isFinite(created.getTime())) return 0;
+  return Math.floor(created.getTime() / 1000);
+}
+
+function getDMConversationCursor(messages = state.dmMessages) {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const oldestMessage = messages[0];
+  const ts = getDMMessageTimestampSeconds(oldestMessage);
+  const id = Number.parseInt(normalizeUserID(oldestMessage && oldestMessage.id), 10);
+  if (!ts || !Number.isFinite(id) || id <= 0) return null;
+  return { ts, id };
+}
+
+function isDMThreadNearBottom(thread, threshold = 40) {
+  if (!thread) return true;
+  return thread.scrollHeight - thread.clientHeight - thread.scrollTop <= threshold;
+}
+
+function bindDMThreadScroll(thread = document.getElementById("dm-thread")) {
+  if (!thread) return;
+  thread.addEventListener(
+    "scroll",
+    () => {
+      if (thread.scrollTop > 40) return;
+      if (state.dmLoading || state.dmLoadingOlder || !state.dmHasMore) return;
+      const now = Date.now();
+      if (now - Number(state.dmOlderLoadAt || 0) < DM_HISTORY_THROTTLE_MS) return;
+      state.dmOlderLoadAt = now;
+      void loadOlderDMConversation().catch((err) => {
+        debugWSWarn("dm history load failed", err);
+      });
+    },
+    { passive: true }
+  );
+}
+
+function syncDMView(options = {}) {
   const panel = document.getElementById("dm-view");
   if (!panel) return;
+  const previousThread = panel.querySelector("#dm-thread");
+  const previousScrollTop = Number.isFinite(options.prevScrollTop) ? options.prevScrollTop : previousThread ? previousThread.scrollTop : 0;
+  const previousScrollHeight = Number.isFinite(options.prevScrollHeight) ? options.prevScrollHeight : previousThread ? previousThread.scrollHeight : 0;
   panel.innerHTML = renderDMViewContent();
+  const thread = panel.querySelector("#dm-thread");
+  if (!thread) return;
+
+  if (options.scrollMode === "bottom") {
+    thread.scrollTop = thread.scrollHeight;
+  } else if (options.scrollMode === "prepend") {
+    thread.scrollTop = Math.max(0, thread.scrollHeight - previousScrollHeight + previousScrollTop);
+  } else if (options.scrollMode === "preserve") {
+    thread.scrollTop = Math.max(0, previousScrollTop);
+  }
+
+  bindDMThreadScroll(thread);
 }
 
 function syncDMPeersPanel() {
@@ -1354,19 +1422,68 @@ function appendDMMessage(message) {
   state.dmMessages = [...state.dmMessages, nextMessage];
 }
 
-async function loadDMConversation(peerID, limit = 10) {
+async function loadDMConversation(peerID, limit = DM_HISTORY_PAGE_SIZE) {
   const peer = normalizeUserID(peerID);
   if (!state.user || !peer || peer === getCurrentUserID()) return;
 
   state.dmLoading = true;
+  state.dmLoadingOlder = false;
+  state.dmHasMore = false;
+  state.dmOlderCursor = null;
+  state.dmOlderLoadAt = 0;
   syncDMView();
 
   try {
     const messages = (await apiFetch(`/api/dm/${peer}?limit=${limit}`)) || [];
     state.dmMessages = Array.isArray(messages) ? messages.map(normalizeDMMessage).filter(Boolean) : [];
+    state.dmHasMore = state.dmMessages.length >= limit;
+    state.dmOlderCursor = getDMConversationCursor(state.dmMessages);
   } finally {
     state.dmLoading = false;
-    syncDMView();
+    syncDMView({ scrollMode: "bottom" });
+  }
+}
+
+async function loadOlderDMConversation(limit = DM_HISTORY_PAGE_SIZE) {
+  const peer = normalizeUserID(state.dmPeerID);
+  const cursor = state.dmOlderCursor || getDMConversationCursor(state.dmMessages);
+  if (!state.user || !peer || peer === getCurrentUserID() || !cursor) return;
+  if (state.dmLoading || state.dmLoadingOlder || !state.dmHasMore) return;
+
+  const thread = document.getElementById("dm-thread");
+  const prevScrollTop = thread ? thread.scrollTop : 0;
+  const prevScrollHeight = thread ? thread.scrollHeight : 0;
+
+  state.dmLoadingOlder = true;
+  syncDMView({ scrollMode: "preserve" });
+
+  try {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      beforeTs: String(cursor.ts),
+      beforeID: String(cursor.id),
+    });
+    const messages = (await apiFetch(`/api/dm/${peer}?${params.toString()}`)) || [];
+    if (normalizeUserID(state.dmPeerID) !== peer) {
+      state.dmLoadingOlder = false;
+      return;
+    }
+
+    const olderMessages = Array.isArray(messages) ? messages.map(normalizeDMMessage).filter(Boolean) : [];
+    const knownIDs = new Set((state.dmMessages || []).map((message) => normalizeUserID(message && message.id)));
+    const uniqueOlderMessages = olderMessages.filter((message) => !knownIDs.has(normalizeUserID(message && message.id)));
+
+    if (uniqueOlderMessages.length > 0) {
+      state.dmMessages = [...uniqueOlderMessages, ...state.dmMessages];
+    }
+    state.dmHasMore = olderMessages.length >= limit;
+    state.dmOlderCursor = getDMConversationCursor(state.dmMessages);
+    state.dmLoadingOlder = false;
+    syncDMView({ scrollMode: "prepend", prevScrollTop, prevScrollHeight });
+  } catch (err) {
+    state.dmLoadingOlder = false;
+    syncDMView({ scrollMode: "preserve", prevScrollTop, prevScrollHeight });
+    throw err;
   }
 }
 
@@ -1455,11 +1572,13 @@ function handleRealtimeMessage(payload) {
     updateDMPeerActivity(message);
 
     if (isMessageForPeer(message, state.dmPeerID)) {
+      const thread = document.getElementById("dm-thread");
+      const shouldStickBottom = isDMThreadNearBottom(thread);
       appendDMMessage(message);
       if (normalizeUserID(message.from && message.from.id) === state.dmPeerID) {
         state.dmUnreadByPeer[state.dmPeerID] = 0;
       }
-      syncDMView();
+      syncDMView({ scrollMode: shouldStickBottom ? "bottom" : "preserve" });
       syncPresencePanel();
       syncDMPeersPanel();
       return;
@@ -1596,15 +1715,23 @@ async function dmView(params) {
   state.dmPeerID = hasPeer ? peerID : "";
   state.dmMessages = [];
   state.dmLoading = false;
+  state.dmLoadingOlder = false;
+  state.dmHasMore = false;
+  state.dmOlderCursor = null;
+  state.dmOlderLoadAt = 0;
   if (state.dmPeerID) {
     state.dmUnreadByPeer[state.dmPeerID] = 0;
     try {
-      await loadDMConversation(state.dmPeerID);
+      await loadDMConversation(state.dmPeerID, DM_HISTORY_PAGE_SIZE);
     } catch (err) {
       if (!err || err.status !== 404) throw err;
       state.dmPeerID = "";
       state.dmMessages = [];
       state.dmLoading = false;
+      state.dmLoadingOlder = false;
+      state.dmHasMore = false;
+      state.dmOlderCursor = null;
+      state.dmOlderLoadAt = 0;
     }
   }
 
@@ -1625,7 +1752,7 @@ async function dmView(params) {
       bindHeaderActions();
       syncPresencePanel();
       syncDMPeersPanel();
-      syncDMView();
+      syncDMView({ scrollMode: state.dmPeerID ? "bottom" : "" });
     },
   };
 }
@@ -2254,6 +2381,10 @@ async function router() {
     state.dmPeerID = "";
     state.dmMessages = [];
     state.dmLoading = false;
+    state.dmLoadingOlder = false;
+    state.dmHasMore = false;
+    state.dmOlderCursor = null;
+    state.dmOlderLoadAt = 0;
   }
   try {
     const view = await match.route.view(match.params || {});

@@ -52,5 +52,6 @@ type ReactionRepo interface {
 type PrivateMessageRepo interface {
 	SavePrivateMessage(ctx context.Context, fromID, toID int64, body string, createdAt time.Time) (*domain.PrivateMessage, error)
 	ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error)
+	ListConversationBefore(ctx context.Context, userA, userB, beforeTs, beforeID int64, limit int) ([]domain.PrivateMessage, error)
 	ListPeers(ctx context.Context, userID int64) ([]domain.PrivateMessagePeer, error)
 }

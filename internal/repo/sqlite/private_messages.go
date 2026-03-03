@@ -41,15 +41,38 @@ func (r *PrivateMessageRepo) SavePrivateMessage(ctx context.Context, fromID, toI
 }
 
 func (r *PrivateMessageRepo) ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	return r.listConversation(ctx, userA, userB, limit, 0, 0, false)
+}
+
+func (r *PrivateMessageRepo) ListConversationBefore(ctx context.Context, userA, userB, beforeTs, beforeID int64, limit int) ([]domain.PrivateMessage, error) {
+	return r.listConversation(ctx, userA, userB, limit, beforeTs, beforeID, true)
+}
+
+func (r *PrivateMessageRepo) listConversation(ctx context.Context, userA, userB int64, limit int, beforeTs, beforeID int64, useCursor bool) ([]domain.PrivateMessage, error) {
+	query := `
         SELECT pm.id, pm.from_user_id, u.username, u.display_name, pm.to_user_id, pm.body, pm.created_at
         FROM private_messages pm
         JOIN users u ON u.id = pm.from_user_id
-        WHERE (pm.from_user_id = ? AND pm.to_user_id = ?)
-           OR (pm.from_user_id = ? AND pm.to_user_id = ?)
+        WHERE (
+                (pm.from_user_id = ? AND pm.to_user_id = ?)
+                OR
+                (pm.from_user_id = ? AND pm.to_user_id = ?)
+              )
+    `
+	args := []any{userA, userB, userB, userA}
+	if useCursor {
+		query += `
+        AND ((pm.created_at < ?) OR (pm.created_at = ? AND pm.id < ?))
+    `
+		args = append(args, beforeTs, beforeTs, beforeID)
+	}
+	query += `
         ORDER BY pm.created_at DESC, pm.id DESC
         LIMIT ?
-    `, userA, userB, userB, userA, limit)
+    `
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

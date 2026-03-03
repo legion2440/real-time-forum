@@ -107,3 +107,42 @@ func TestPrivateMessageRepo_ListPeersUsesDisplayNameForSecondarySort(t *testing.
 		t.Fatalf("expected display-name secondary sort order, got %+v", peers)
 	}
 }
+
+func TestPrivateMessageRepo_ListConversationBeforeReturnsOlderMessages(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	users := NewUserRepo(db)
+	messages := NewPrivateMessageRepo(db)
+
+	meID := mustCreateUser(t, ctx, users, "me4@example.com", "me_user4")
+	peerID := mustCreateUser(t, ctx, users, "peer4@example.com", "peer_user4")
+
+	first, err := messages.SavePrivateMessage(ctx, meID, peerID, "first", time.Unix(1700000000, 0).UTC())
+	if err != nil {
+		t.Fatalf("save first message: %v", err)
+	}
+	second, err := messages.SavePrivateMessage(ctx, peerID, meID, "second", time.Unix(1700000010, 0).UTC())
+	if err != nil {
+		t.Fatalf("save second message: %v", err)
+	}
+	third, err := messages.SavePrivateMessage(ctx, meID, peerID, "third", time.Unix(1700000010, 0).UTC())
+	if err != nil {
+		t.Fatalf("save third message: %v", err)
+	}
+	if _, err := messages.SavePrivateMessage(ctx, peerID, meID, "fourth", time.Unix(1700000020, 0).UTC()); err != nil {
+		t.Fatalf("save fourth message: %v", err)
+	}
+
+	history, err := messages.ListConversationBefore(ctx, meID, peerID, third.CreatedAt.Unix(), third.ID, 10)
+	if err != nil {
+		t.Fatalf("list conversation before: %v", err)
+	}
+
+	if len(history) != 2 {
+		t.Fatalf("expected 2 messages before cursor, got %d", len(history))
+	}
+	if history[0].ID != second.ID || history[1].ID != first.ID {
+		t.Fatalf("expected DESC order with strict cursor filter, got %+v", history)
+	}
+}
