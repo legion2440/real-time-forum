@@ -7,6 +7,7 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_TOO_BIG_MESSAGE = "image is too big (max 20MB)";
 const ATTACHMENT_INVALID_TYPE_MESSAGE = "Only JPEG/PNG/GIF allowed";
 const DM_UNREAD_STORAGE_KEY_PREFIX = "forum:dm-unread:v1:";
+const MAX_UNREAD_PEERS = 200;
 
 const state = {
   user: null,
@@ -127,7 +128,7 @@ function getAttachmentNumericID(attachment) {
 
 function getDMUnreadStorageKey(userID = getCurrentUserID()) {
   const id = normalizeUserID(userID);
-  return id ? `${DM_UNREAD_STORAGE_KEY_PREFIX}${id}` : "";
+  return state.user && id ? `${DM_UNREAD_STORAGE_KEY_PREFIX}${id}` : "";
 }
 
 function normalizeDMUnreadMap(value) {
@@ -135,13 +136,29 @@ function normalizeDMUnreadMap(value) {
 
   const entries = Object.entries(value).reduce((acc, [peerID, unread]) => {
     const normalizedPeerID = normalizeUserID(peerID);
-    const count = Number(unread) || 0;
+    const count = Math.max(0, Math.trunc(Number(unread) || 0));
     if (!normalizedPeerID || count <= 0) return acc;
-    acc[normalizedPeerID] = Math.max(0, Math.trunc(count));
+    acc.push([normalizedPeerID, count]);
+    return acc;
+  }, []);
+
+  entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: "base" }));
+
+  return entries.slice(0, MAX_UNREAD_PEERS).reduce((acc, [peerID, unread]) => {
+    acc[peerID] = unread;
     return acc;
   }, {});
+}
 
-  return entries;
+function clearPersistedDMUnreadState(userID = getCurrentUserID()) {
+  const key = getDMUnreadStorageKey(userID);
+  if (!key) return;
+
+  try {
+    localStorage.removeItem(key);
+  } catch (_) {
+    // ignore storage errors
+  }
 }
 
 function persistDMUnreadState(userID = getCurrentUserID()) {
@@ -150,8 +167,9 @@ function persistDMUnreadState(userID = getCurrentUserID()) {
 
   try {
     const payload = normalizeDMUnreadMap(state.dmUnreadByPeer);
+    state.dmUnreadByPeer = payload;
     if (Object.keys(payload).length === 0) {
-      localStorage.removeItem(key);
+      clearPersistedDMUnreadState(userID);
       return;
     }
     localStorage.setItem(key, JSON.stringify(payload));
@@ -171,6 +189,27 @@ function loadPersistedDMUnreadState(userID) {
   } catch (_) {
     return {};
   }
+}
+
+function syncDMUnreadCache(nextUnreadByPeer) {
+  state.dmUnreadByPeer = normalizeDMUnreadMap(nextUnreadByPeer);
+  persistDMUnreadState();
+  syncNotificationButton();
+}
+
+function setDMPeerUnreadCount(peerID, unreadCount) {
+  const id = normalizeUserID(peerID);
+  if (!id) return;
+
+  const nextUnreadByPeer = { ...(state.dmUnreadByPeer || {}) };
+  const nextCount = Math.max(0, Math.trunc(Number(unreadCount) || 0));
+  if (nextCount > 0) {
+    nextUnreadByPeer[id] = nextCount;
+  } else {
+    delete nextUnreadByPeer[id];
+  }
+
+  syncDMUnreadCache(nextUnreadByPeer);
 }
 
 function getTotalUnreadCount() {
@@ -835,12 +874,14 @@ function normalizeDMPeer(peer) {
   const username = normalizeUsername(peer.username);
   const displayName = String(peer.displayName || peer.display_name || "").trim();
   const lastMessageAt = Number(peer.lastMessageAt ?? peer.last_message_at ?? 0);
+  const unreadCount = Math.max(0, Math.trunc(Number(peer.unreadCount ?? peer.unread_count ?? 0) || 0));
   if (!id || !username) return null;
   return {
     id,
     username,
     displayName,
     lastMessageAt: Number.isFinite(lastMessageAt) && lastMessageAt > 0 ? lastMessageAt : 0,
+    unreadCount,
   };
 }
 
@@ -873,6 +914,7 @@ function renderDMPeersList(peers, emptyLabel) {
       const username = normalizeUsername(peer && peer.username);
       const label = getDMPeerLabel(peer);
       const isOnline = state.onlineUserIDs.has(id);
+      const hasUnread = Number(state.dmUnreadByPeer[id] || 0) > 0;
       const lastMessageAt = Number(peer && peer.lastMessageAt ? peer.lastMessageAt : 0);
       const activityLabel = lastMessageAt > 0 ? formatDate(new Date(lastMessageAt * 1000).toISOString()) : "No messages yet";
       if (!id || !username) return "";
@@ -888,6 +930,7 @@ function renderDMPeersList(peers, emptyLabel) {
               <div class="dm-peer-title">
                 <span class="dm-peer-status-dot ${isOnline ? "is-online" : "is-offline"}" aria-hidden="true"></span>
                 <strong>${escapeHTML(label)}</strong>
+                ${hasUnread ? '<span class="dm-peer-unread-dot" aria-label="Unread messages"></span>' : ""}
               </div>
             </div>
             <div class="dm-peer-subhead">
@@ -1357,6 +1400,9 @@ function bindHeaderActions() {
     el.addEventListener("click", toggleTheme);
   });
   syncNotificationButton();
+  if (state.user) {
+    void loadDMPeers();
+  }
 
   const logoutBtn = document.querySelector("[data-action='logout']");
   if (logoutBtn) {
@@ -1672,7 +1718,14 @@ async function loadDMPeers(force = false) {
 
   try {
     const peers = (await apiFetch("/api/dm/peers")) || [];
-    state.dmPeers = Array.isArray(peers) ? sortDMPeers(peers.map(normalizeDMPeer).filter(Boolean)) : [];
+    const normalizedPeers = Array.isArray(peers) ? peers.map(normalizeDMPeer).filter(Boolean) : [];
+    state.dmPeers = sortDMPeers(normalizedPeers);
+    syncDMUnreadCache(
+      normalizedPeers.reduce((acc, peer) => {
+        acc[peer.id] = peer.unreadCount;
+        return acc;
+      }, {})
+    );
     state.dmPeersLoaded = true;
   } catch (_) {
     state.dmPeers = [];
@@ -1699,6 +1752,31 @@ function appendDMMessage(message) {
     return;
   }
   state.dmMessages = [...state.dmMessages, nextMessage];
+}
+
+function getLatestDMMessageID(messages = state.dmMessages) {
+  if (!Array.isArray(messages) || messages.length === 0) return 0;
+  const latestMessage = messages[messages.length - 1];
+  const id = Number.parseInt(normalizeUserID(latestMessage && latestMessage.id), 10);
+  return Number.isFinite(id) && id >= 0 ? id : 0;
+}
+
+async function markDMConversationRead(peerID, lastReadMessageID) {
+  const peer = normalizeUserID(peerID);
+  const lastReadID = Number.parseInt(String(lastReadMessageID ?? "").trim(), 10);
+  if (!state.user || !peer || peer === getCurrentUserID() || !Number.isFinite(lastReadID) || lastReadID < 0) {
+    return;
+  }
+
+  setDMPeerUnreadCount(peer, 0);
+  if (lastReadID === 0) {
+    return;
+  }
+
+  await apiFetch(`/api/dm/${peer}/read`, {
+    method: "POST",
+    body: JSON.stringify({ lastReadMessageId: lastReadID }),
+  });
 }
 
 async function loadDMConversation(peerID, limit = DM_HISTORY_PAGE_SIZE) {
@@ -1770,12 +1848,10 @@ function openDM(peerID) {
   const peer = normalizeUserID(peerID);
   if (!state.user || !peer || peer === getCurrentUserID()) return;
 
-  state.dmUnreadByPeer[peer] = 0;
-  persistDMUnreadState();
+  setDMPeerUnreadCount(peer, 0);
   if (!isDMRoute()) {
     state.dmReturnPath = `${location.pathname || "/"}${location.search || ""}`;
   }
-  syncNotificationButton();
   syncPresencePanel();
   syncDMPeersPanel();
   navigate(`/dm/${peer}`);
@@ -1868,11 +1944,9 @@ function handleRealtimeMessage(payload) {
       if (normalizeUserID(message.from && message.from.id) === getCurrentUserID()) {
         state.dmDraftAttachment = null;
       }
-      if (normalizeUserID(message.from && message.from.id) === state.dmPeerID) {
-        state.dmUnreadByPeer[state.dmPeerID] = 0;
-        persistDMUnreadState();
-      }
-      syncNotificationButton();
+      void markDMConversationRead(state.dmPeerID, message.id).catch((err) => {
+        debugWSWarn("dm read sync failed", err);
+      });
       syncDMView({ scrollMode: shouldStickBottom ? "bottom" : "preserve" });
       syncPresencePanel();
       syncDMPeersPanel();
@@ -1882,9 +1956,7 @@ function handleRealtimeMessage(payload) {
     if (normalizeUserID(message.to && message.to.id) === getCurrentUserID()) {
       const peerID = normalizeUserID(message.from && message.from.id);
       if (peerID && peerID !== getCurrentUserID()) {
-        state.dmUnreadByPeer[peerID] = Number(state.dmUnreadByPeer[peerID] || 0) + 1;
-        persistDMUnreadState();
-        syncNotificationButton();
+        setDMPeerUnreadCount(peerID, Number(state.dmUnreadByPeer[peerID] || 0) + 1);
         syncPresencePanel();
         syncDMPeersPanel();
       }
@@ -2019,11 +2091,15 @@ async function dmView(params) {
   state.dmDraftAttachment = null;
   state.dmAttachmentUploading = false;
   if (state.dmPeerID) {
-    state.dmUnreadByPeer[state.dmPeerID] = 0;
-    persistDMUnreadState();
-    syncNotificationButton();
+    setDMPeerUnreadCount(state.dmPeerID, 0);
     try {
       await loadDMConversation(state.dmPeerID, DM_HISTORY_PAGE_SIZE);
+      const latestMessageID = getLatestDMMessageID(state.dmMessages);
+      if (latestMessageID > 0) {
+        void markDMConversationRead(state.dmPeerID, latestMessageID).catch((err) => {
+          debugWSWarn("dm read sync failed", err);
+        });
+      }
     } catch (err) {
       if (!err || err.status !== 404) throw err;
       state.dmPeerID = "";

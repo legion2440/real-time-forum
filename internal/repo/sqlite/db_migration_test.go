@@ -123,6 +123,14 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 		t.Fatal("expected attachments table to be added")
 	}
 
+	hasDMReadStateTable, err := tableExists(db, "dm_read_state")
+	if err != nil {
+		t.Fatalf("check dm_read_state table: %v", err)
+	}
+	if !hasDMReadStateTable {
+		t.Fatal("expected dm_read_state table to be added")
+	}
+
 	hasPostAttachment, err := tableHasColumn(db, "posts", "attachment_id")
 	if err != nil {
 		t.Fatalf("check posts.attachment_id column: %v", err)

@@ -18,4 +18,5 @@ type PrivateMessagePeer struct {
 	Username      string
 	DisplayName   string
 	LastMessageAt int64
+	UnreadCount   int
 }

@@ -112,7 +112,18 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
             u.id,
             u.username,
             u.display_name,
-            COALESCE(MAX(pm.created_at), 0) AS last_message_at
+            COALESCE(MAX(pm.created_at), 0) AS last_message_at,
+            COALESCE((
+                SELECT COUNT(*)
+                FROM private_messages incoming
+                WHERE incoming.from_user_id = u.id
+                  AND incoming.to_user_id = ?
+                  AND incoming.id > COALESCE((
+                      SELECT rs.last_read_message_id
+                      FROM dm_read_state rs
+                      WHERE rs.user_id = ? AND rs.peer_id = u.id
+                  ), 0)
+            ), 0) AS unread_count
         FROM users u
         LEFT JOIN private_messages pm
             ON (
@@ -129,7 +140,7 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
                 ELSE u.username
             END) ASC,
             u.id ASC
-    `, userID, userID, userID)
+    `, userID, userID, userID, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +150,7 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
 	for rows.Next() {
 		var peer domain.PrivateMessagePeer
 		var displayName sql.NullString
-		if err := rows.Scan(&peer.ID, &peer.Username, &displayName, &peer.LastMessageAt); err != nil {
+		if err := rows.Scan(&peer.ID, &peer.Username, &displayName, &peer.LastMessageAt, &peer.UnreadCount); err != nil {
 			return nil, err
 		}
 		peer.DisplayName = strings.TrimSpace(displayName.String)
@@ -151,4 +162,42 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
 	}
 
 	return peers, nil
+}
+
+func (r *PrivateMessageRepo) MarkRead(ctx context.Context, userID, peerID, lastReadMessageID int64, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+        INSERT INTO dm_read_state (user_id, peer_id, last_read_message_id, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, peer_id) DO UPDATE SET
+            last_read_message_id = CASE
+                WHEN excluded.last_read_message_id > dm_read_state.last_read_message_id
+                    THEN excluded.last_read_message_id
+                ELSE dm_read_state.last_read_message_id
+            END,
+            updated_at = excluded.updated_at
+    `, userID, peerID, lastReadMessageID, timeToUnix(updatedAt))
+	return err
+}
+
+func (r *PrivateMessageRepo) ConversationHasMessage(ctx context.Context, userA, userB, messageID int64) (bool, error) {
+	row := r.db.QueryRowContext(ctx, `
+        SELECT 1
+        FROM private_messages
+        WHERE id = ?
+          AND (
+                (from_user_id = ? AND to_user_id = ?)
+                OR
+                (from_user_id = ? AND to_user_id = ?)
+              )
+        LIMIT 1
+    `, messageID, userA, userB, userB, userA)
+
+	var marker int
+	if err := row.Scan(&marker); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return marker == 1, nil
 }

@@ -60,4 +60,6 @@ type PrivateMessageRepo interface {
 	ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error)
 	ListConversationBefore(ctx context.Context, userA, userB, beforeTs, beforeID int64, limit int) ([]domain.PrivateMessage, error)
 	ListPeers(ctx context.Context, userID int64) ([]domain.PrivateMessagePeer, error)
+	MarkRead(ctx context.Context, userID, peerID, lastReadMessageID int64, updatedAt time.Time) error
+	ConversationHasMessage(ctx context.Context, userA, userB, messageID int64) (bool, error)
 }

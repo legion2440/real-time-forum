@@ -146,3 +146,66 @@ func TestPrivateMessageRepo_ListConversationBeforeReturnsOlderMessages(t *testin
 		t.Fatalf("expected DESC order with strict cursor filter, got %+v", history)
 	}
 }
+
+func TestPrivateMessageRepo_ListPeersIncludesUnreadCountAndMarkRead(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	users := NewUserRepo(db)
+	messages := NewPrivateMessageRepo(db)
+
+	meID := mustCreateUser(t, ctx, users, "me5@example.com", "me_user5")
+	peerID := mustCreateUser(t, ctx, users, "peer5@example.com", "peer_user5")
+	idlePeerID := mustCreateUser(t, ctx, users, "idle5@example.com", "idle_user5")
+
+	firstIncoming, err := messages.SavePrivateMessage(ctx, peerID, meID, "first", nil, time.Unix(1700000100, 0).UTC())
+	if err != nil {
+		t.Fatalf("save first incoming message: %v", err)
+	}
+	if _, err := messages.SavePrivateMessage(ctx, meID, peerID, "outgoing", nil, time.Unix(1700000110, 0).UTC()); err != nil {
+		t.Fatalf("save outgoing message: %v", err)
+	}
+	secondIncoming, err := messages.SavePrivateMessage(ctx, peerID, meID, "second", nil, time.Unix(1700000120, 0).UTC())
+	if err != nil {
+		t.Fatalf("save second incoming message: %v", err)
+	}
+
+	peers, err := messages.ListPeers(ctx, meID)
+	if err != nil {
+		t.Fatalf("list peers before read: %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(peers))
+	}
+	if peers[0].ID != peerID {
+		t.Fatalf("expected active peer first, got %+v", peers)
+	}
+	if peers[0].UnreadCount != 2 {
+		t.Fatalf("expected unreadCount=2 before read, got %+v", peers[0])
+	}
+	if peers[1].ID != idlePeerID || peers[1].UnreadCount != 0 {
+		t.Fatalf("expected idle peer unreadCount=0, got %+v", peers[1])
+	}
+
+	if err := messages.MarkRead(ctx, meID, peerID, firstIncoming.ID, time.Unix(1700000200, 0).UTC()); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+
+	peers, err = messages.ListPeers(ctx, meID)
+	if err != nil {
+		t.Fatalf("list peers after read: %v", err)
+	}
+
+	if peers[0].UnreadCount != 1 {
+		t.Fatalf("expected unreadCount=1 after read, got %+v", peers[0])
+	}
+
+	hasMessage, err := messages.ConversationHasMessage(ctx, meID, peerID, secondIncoming.ID)
+	if err != nil {
+		t.Fatalf("conversation has message: %v", err)
+	}
+	if !hasMessage {
+		t.Fatalf("expected second incoming message to belong to conversation")
+	}
+}

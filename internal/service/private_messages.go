@@ -96,3 +96,28 @@ func (s *PrivateMessageService) ListPeers(ctx context.Context, userID int64) ([]
 	}
 	return s.messages.ListPeers(ctx, userID)
 }
+
+func (s *PrivateMessageService) MarkRead(ctx context.Context, userID, peerID, lastReadMessageID int64) error {
+	if userID <= 0 || peerID <= 0 || userID == peerID || lastReadMessageID < 0 {
+		return ErrInvalidInput
+	}
+
+	if _, err := s.users.GetByID(ctx, peerID); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	if lastReadMessageID > 0 {
+		exists, err := s.messages.ConversationHasMessage(ctx, userID, peerID, lastReadMessageID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrInvalidInput
+		}
+	}
+
+	return s.messages.MarkRead(ctx, userID, peerID, lastReadMessageID, s.clock.Now())
+}

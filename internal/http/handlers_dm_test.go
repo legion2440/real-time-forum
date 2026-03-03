@@ -121,3 +121,95 @@ func TestDMConversationCursorReturnsOlderMessagesAscending(t *testing.T) {
 		t.Fatalf("expected ASC response order for older messages, got %+v", got)
 	}
 }
+
+func TestDMPeersReturnsUnreadCounts(t *testing.T) {
+	h, auth, pms, cleanup := newDMHandler(t)
+	defer cleanup()
+
+	meID := mustRegisterUser(t, auth, "me-dm-peers@example.com", "me_dm_peers")
+	peerID := mustRegisterUser(t, auth, "peer-dm-peers@example.com", "peer_dm_peers")
+	idlePeerID := mustRegisterUser(t, auth, "idle-dm-peers@example.com", "idle_dm_peers")
+	token := mustLoginUser(t, auth, "me-dm-peers@example.com")
+
+	if _, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "one", nil, time.Unix(1700000100, 0).UTC()); err != nil {
+		t.Fatalf("save first unread: %v", err)
+	}
+	if _, err := pms.SavePrivateMessage(context.Background(), meID, peerID, "outgoing", nil, time.Unix(1700000110, 0).UTC()); err != nil {
+		t.Fatalf("save outgoing: %v", err)
+	}
+	if _, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "two", nil, time.Unix(1700000120, 0).UTC()); err != nil {
+		t.Fatalf("save second unread: %v", err)
+	}
+
+	handler := h.Routes(t.TempDir())
+	req := httptest.NewRequest(http.MethodGet, "/api/dm/peers", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token, Path: "/"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var peers []privateMessagePeerDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &peers); err != nil {
+		t.Fatalf("decode peers response: %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(peers))
+	}
+	if peers[0].ID != strconv.FormatInt(peerID, 10) || peers[0].UnreadCount != 2 {
+		t.Fatalf("expected active peer with unreadCount=2 first, got %+v", peers)
+	}
+	if peers[1].ID != strconv.FormatInt(idlePeerID, 10) || peers[1].UnreadCount != 0 {
+		t.Fatalf("expected idle peer unreadCount=0 second, got %+v", peers)
+	}
+}
+
+func TestDMReadMarksConversationAsRead(t *testing.T) {
+	h, auth, pms, cleanup := newDMHandler(t)
+	defer cleanup()
+
+	meID := mustRegisterUser(t, auth, "me-dm-read@example.com", "me_dm_read")
+	peerID := mustRegisterUser(t, auth, "peer-dm-read@example.com", "peer_dm_read")
+	token := mustLoginUser(t, auth, "me-dm-read@example.com")
+
+	message, err := pms.SavePrivateMessage(context.Background(), peerID, meID, "unread", nil, time.Unix(1700000200, 0).UTC())
+	if err != nil {
+		t.Fatalf("save unread message: %v", err)
+	}
+
+	handler := h.Routes(t.TempDir())
+
+	readReq := httptest.NewRequest(http.MethodPost, "/api/dm/"+strconv.FormatInt(peerID, 10)+"/read", strings.NewReader(`{"lastReadMessageId":"`+strconv.FormatInt(message.ID, 10)+`"}`))
+	readReq.Header.Set("Content-Type", "application/json")
+	readReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token, Path: "/"})
+	readRec := httptest.NewRecorder()
+	handler.ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusNoContent, readRec.Code, readRec.Body.String())
+	}
+
+	peersReq := httptest.NewRequest(http.MethodGet, "/api/dm/peers", nil)
+	peersReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token, Path: "/"})
+	peersRec := httptest.NewRecorder()
+	handler.ServeHTTP(peersRec, peersReq)
+
+	if peersRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, peersRec.Code, peersRec.Body.String())
+	}
+
+	var peers []privateMessagePeerDTO
+	if err := json.Unmarshal(peersRec.Body.Bytes(), &peers); err != nil {
+		t.Fatalf("decode peers response: %v", err)
+	}
+
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].UnreadCount != 0 {
+		t.Fatalf("expected unreadCount=0 after mark-read, got %+v", peers[0])
+	}
+}

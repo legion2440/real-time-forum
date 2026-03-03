@@ -95,3 +95,13 @@ CREATE TABLE IF NOT EXISTS private_messages (
   FOREIGN KEY(to_user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS dm_read_state (
+  user_id INTEGER NOT NULL,
+  peer_id INTEGER NOT NULL,
+  last_read_message_id INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, peer_id),
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(peer_id) REFERENCES users(id) ON DELETE CASCADE
+);

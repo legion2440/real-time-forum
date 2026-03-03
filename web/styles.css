@@ -1509,6 +1509,15 @@ textarea {
   gap: 10px;
 }
 
+.dm-peer-unread-dot {
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #ef4444 14%, transparent);
+}
+
 .dm-peer-status-dot {
   flex: none;
   width: 0.6rem;

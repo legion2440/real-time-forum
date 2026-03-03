@@ -83,11 +83,19 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureDMReadStateTable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureUserDisplayNameIndex(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	if err := ensureAttachmentIndexes(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureDMReadStateIndexes(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -242,6 +250,21 @@ func ensurePrivateMessageAttachmentColumn(db *sql.DB) error {
 	return err
 }
 
+func ensureDMReadStateTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS dm_read_state (
+			user_id INTEGER NOT NULL,
+			peer_id INTEGER NOT NULL,
+			last_read_message_id INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, peer_id),
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(peer_id) REFERENCES users(id) ON DELETE CASCADE
+		)
+	`)
+	return err
+}
+
 func ensureUserDisplayNameIndex(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name_nocase
@@ -265,6 +288,11 @@ func ensureAttachmentIndexes(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureDMReadStateIndexes(db *sql.DB) error {
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_private_messages_to_user_id_id ON private_messages(to_user_id, id)`)
+	return err
 }
 
 func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {
