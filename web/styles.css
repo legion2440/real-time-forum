@@ -912,6 +912,8 @@ textarea {
 
 .post-card-media,
 .post-detail-media {
+  display: flex;
+  align-items: flex-start;
   margin-top: 14px;
 }
 
@@ -1168,7 +1170,8 @@ textarea {
 
 .attachment-image {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   height: auto;
   object-fit: contain;
   border-radius: 14px;
