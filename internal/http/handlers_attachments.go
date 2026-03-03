@@ -2,7 +2,8 @@ package http
 
 import (
 	"errors"
-	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -40,7 +41,8 @@ func (h *Handler) handleAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, service.MaxAttachmentBodyBytes)
-	if err := r.ParseMultipartForm(service.MaxAttachmentBodyBytes); err != nil {
+	file, originalName, err := readAttachmentUploadFile(r)
+	if err != nil {
 		if isMultipartTooLarge(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "image is too big (max 20MB)")
 			return
@@ -48,18 +50,16 @@ func (h *Handler) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid input")
 		return
 	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid input")
-		return
-	}
 	defer file.Close()
 
 	attachment, err := h.attachments.UploadAttachment(r.Context(), userID, service.AttachmentUpload{
-		OriginalName: header.Filename,
+		OriginalName: originalName,
 		Reader:       file,
 	})
+	if isMultipartTooLarge(err) {
+		writeError(w, http.StatusRequestEntityTooLarge, "image is too big (max 20MB)")
+		return
+	}
 	if handleServiceError(w, err) {
 		return
 	}
@@ -119,6 +119,34 @@ func (h *Handler) handleAttachmentDownload(w http.ResponseWriter, r *http.Reques
 	http.ServeFile(w, r, filePath)
 }
 
+func readAttachmentUploadFile(r *http.Request) (*multipart.Part, string, error) {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return nil, "", err
+	}
+
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			return nil, "", service.ErrInvalidInput
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if part.FormName() != "file" {
+			_ = part.Close()
+			continue
+		}
+
+		filename := strings.TrimSpace(part.FileName())
+		if filename == "" {
+			_ = part.Close()
+			return nil, "", service.ErrInvalidInput
+		}
+		return part, filename, nil
+	}
+}
+
 func newAttachmentResponseDTO(attachment *domain.Attachment) *attachmentResponseDTO {
 	if attachment == nil || attachment.ID <= 0 {
 		return nil
@@ -139,5 +167,8 @@ func isMultipartTooLarge(err error) bool {
 	if errors.As(err, &maxBytesErr) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(err.Error()), strings.ToLower(fmt.Sprintf("http: request body too large")))
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "request body too large") ||
+		strings.Contains(msg, "http: post too large") ||
+		strings.Contains(msg, "multipart: message too large")
 }

@@ -3,6 +3,9 @@ const THEME_KEY = "theme";
 const DEBUG_WS = false;
 const DM_HISTORY_PAGE_SIZE = 10;
 const DM_HISTORY_THROTTLE_MS = 400;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const ATTACHMENT_TOO_BIG_MESSAGE = "image is too big (max 20MB)";
+const ATTACHMENT_INVALID_TYPE_MESSAGE = "Only JPEG/PNG/GIF allowed";
 
 const state = {
   user: null,
@@ -122,9 +125,11 @@ function getAttachmentNumericID(attachment) {
 }
 
 function getAttachmentErrorMessage(err) {
-  if (err && err.status === 413) return "Image is too big (max 20MB)";
-  if (err && String(err.message || "").trim() === "Only JPEG/PNG/GIF allowed") return "Only JPEG/PNG/GIF allowed";
-  return err && err.message ? err.message : "Failed to upload image.";
+  const status = Number(err && err.status);
+  const message = String((err && err.message) || "").trim();
+  if (status === 413 || message.toLowerCase() === ATTACHMENT_TOO_BIG_MESSAGE) return ATTACHMENT_TOO_BIG_MESSAGE;
+  if (message === "invalid image type" || message === ATTACHMENT_INVALID_TYPE_MESSAGE) return ATTACHMENT_INVALID_TYPE_MESSAGE;
+  return message || "Failed to upload image.";
 }
 
 function getProfileAgeValue(profile) {
@@ -1013,15 +1018,81 @@ function syncPostAttachmentControls() {
   }
 }
 
+function validateAttachmentFile(file) {
+  if (!file) return "";
+  const size = Number(file.size || 0);
+  if (Number.isFinite(size) && size > MAX_ATTACHMENT_BYTES) {
+    return ATTACHMENT_TOO_BIG_MESSAGE;
+  }
+  return "";
+}
+
+async function readUploadError(response) {
+  let text = "";
+  try {
+    text = await response.text();
+  } catch (_) {
+    text = "";
+  }
+
+  const body = String(text || "").trim();
+  if (!body) {
+    return { code: "", message: "" };
+  }
+
+  try {
+    const payload = JSON.parse(body);
+    return {
+      code: typeof payload.error === "string" ? payload.error.trim() : "",
+      message: typeof payload.message === "string" ? payload.message.trim() : "",
+      text: body,
+    };
+  } catch (_) {
+    return { code: "", message: body, text: body };
+  }
+}
+
 async function uploadImageAttachment(file) {
+  const validationMessage = validateAttachmentFile(file);
+  if (validationMessage) {
+    const err = new Error(validationMessage);
+    err.status = 413;
+    throw err;
+  }
+
   const payload = new FormData();
   payload.append("file", file);
-  return normalizeAttachment(
-    await apiFetch("/api/attachments", {
+
+  let response;
+  try {
+    response = await fetch("/api/attachments", {
       method: "POST",
       body: payload,
-    })
-  );
+    });
+  } catch (_) {
+    throw new Error("Failed to upload image.");
+  }
+
+  if (!response.ok) {
+    const errorPayload = await readUploadError(response);
+    const apiError = String(errorPayload.code || "").trim();
+    const apiMessage = String(errorPayload.message || "").trim();
+    const message = apiMessage || apiError || "Failed to upload image.";
+    const err = new Error(message);
+    err.status = response.status;
+    err.code = apiError;
+    err.apiMessage = apiMessage;
+
+    const isSessionEndedUnauthorized = response.status === 401 && apiError === "unauthorized" && apiMessage;
+    if (isSessionEndedUnauthorized) {
+      err.handled = true;
+      handleSessionEndedUX(apiMessage);
+    }
+
+    throw err;
+  }
+
+  return normalizeAttachment(await response.json());
 }
 
 function renderPresencePanel() {
@@ -2700,6 +2771,17 @@ document.addEventListener("change", async (e) => {
     if (errorBox) errorBox.innerHTML = "";
     if (!file) return;
 
+    const validationMessage = validateAttachmentFile(file);
+    if (validationMessage) {
+      state.dmDraftAttachment = null;
+      syncDMComposerAttachmentPreview();
+      if (errorBox) {
+        errorBox.innerHTML = renderNotice(validationMessage);
+      }
+      dmInput.value = "";
+      return;
+    }
+
     state.dmAttachmentUploading = true;
     syncDMView({ scrollMode: "preserve" });
     try {
@@ -2725,6 +2807,17 @@ document.addEventListener("change", async (e) => {
   const errorBox = document.getElementById("post-error");
   if (errorBox) errorBox.innerHTML = "";
   if (!file) return;
+
+  const validationMessage = validateAttachmentFile(file);
+  if (validationMessage) {
+    state.postDraftAttachment = null;
+    syncPostAttachmentPreview();
+    if (errorBox) {
+      errorBox.innerHTML = renderNotice(validationMessage);
+    }
+    postInput.value = "";
+    return;
+  }
 
   state.postAttachmentUploading = true;
   syncPostAttachmentControls();

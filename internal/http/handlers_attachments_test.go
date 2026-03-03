@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -85,6 +86,43 @@ func TestAttachmentUploadTooLargeReturnsRequestEntityTooLarge(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"error":"image is too big (max 20MB)"`) {
 		t.Fatalf("expected upload-too-large error, got %q", rec.Body.String())
+	}
+}
+
+func TestAttachmentUploadTooLargeOverHTTPReturnsJSON(t *testing.T) {
+	h, auth, _, _, cleanup := newAttachmentHandler(t)
+	defer cleanup()
+
+	mustRegisterUser(t, auth, "upload-large-http@example.com", "upload_large_http")
+	token := mustLoginUser(t, auth, "upload-large-http@example.com")
+
+	server := httptest.NewServer(h.Routes(t.TempDir()))
+	defer server.Close()
+
+	body, contentType := newMultipartBody(t, "file", "huge.png", bytes.Repeat([]byte("A"), int(service.MaxAttachmentBodyBytes+1)))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/attachments", bytes.NewReader(body.Bytes()))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token, Path: "/"})
+
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("upload request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	responseBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusRequestEntityTooLarge, res.StatusCode, string(responseBody))
+	}
+	if !strings.Contains(string(responseBody), `"error":"image is too big (max 20MB)"`) {
+		t.Fatalf("expected upload-too-large error, got %q", string(responseBody))
 	}
 }
 
