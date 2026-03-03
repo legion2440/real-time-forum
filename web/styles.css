@@ -297,11 +297,32 @@ textarea {
 }
 
 .icon-btn.notification-btn {
+  position: relative;
   color: var(--primary);
 }
 
 .icon-btn.notification-btn:hover {
   color: var(--primary-strong);
+}
+
+.icon-btn.notification-btn.has-notifications {
+  color: #ef4444;
+}
+
+.icon-btn.notification-btn.has-notifications:hover {
+  color: #dc2626;
+}
+
+.notif-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #ef4444;
+  border: 2px solid var(--bg-elevated);
+  pointer-events: none;
 }
 
 :root[data-theme="dark"] .theme-toggle-btn {
@@ -1523,21 +1544,6 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.dm-peer-badge {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.5rem;
-  height: 1.5rem;
-  padding: 0 0.45rem;
-  border-radius: 999px;
-  background: var(--primary);
-  color: #fff;
-  font-size: 0.78rem;
-  font-weight: 700;
 }
 
 .dm-thread {

@@ -6,6 +6,7 @@ const DM_HISTORY_THROTTLE_MS = 400;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_TOO_BIG_MESSAGE = "image is too big (max 20MB)";
 const ATTACHMENT_INVALID_TYPE_MESSAGE = "Only JPEG/PNG/GIF allowed";
+const DM_UNREAD_STORAGE_KEY_PREFIX = "forum:dm-unread:v1:";
 
 const state = {
   user: null,
@@ -124,6 +125,62 @@ function getAttachmentNumericID(attachment) {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
+function getDMUnreadStorageKey(userID = getCurrentUserID()) {
+  const id = normalizeUserID(userID);
+  return id ? `${DM_UNREAD_STORAGE_KEY_PREFIX}${id}` : "";
+}
+
+function normalizeDMUnreadMap(value) {
+  if (!value || typeof value !== "object") return {};
+
+  const entries = Object.entries(value).reduce((acc, [peerID, unread]) => {
+    const normalizedPeerID = normalizeUserID(peerID);
+    const count = Number(unread) || 0;
+    if (!normalizedPeerID || count <= 0) return acc;
+    acc[normalizedPeerID] = Math.max(0, Math.trunc(count));
+    return acc;
+  }, {});
+
+  return entries;
+}
+
+function persistDMUnreadState(userID = getCurrentUserID()) {
+  const key = getDMUnreadStorageKey(userID);
+  if (!key) return;
+
+  try {
+    const payload = normalizeDMUnreadMap(state.dmUnreadByPeer);
+    if (Object.keys(payload).length === 0) {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch (_) {
+    // ignore storage errors
+  }
+}
+
+function loadPersistedDMUnreadState(userID) {
+  const key = getDMUnreadStorageKey(userID);
+  if (!key) return {};
+
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return {};
+    return normalizeDMUnreadMap(JSON.parse(raw));
+  } catch (_) {
+    return {};
+  }
+}
+
+function getTotalUnreadCount() {
+  return Object.values(state.dmUnreadByPeer || {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+}
+
+function getNotificationsLabel(totalUnread = getTotalUnreadCount()) {
+  return totalUnread > 0 ? `Notifications (${totalUnread} unread)` : "Notifications";
+}
+
 function getAttachmentErrorMessage(err) {
   const status = Number(err && err.status);
   const message = String((err && err.message) || "").trim();
@@ -196,6 +253,7 @@ function clearDMState() {
   state.dmDraftAttachment = null;
   state.dmAttachmentUploading = false;
   state.dmReturnPath = "";
+  syncNotificationButton();
   syncDMView();
   syncDMPeersPanel();
 }
@@ -213,7 +271,9 @@ function clearDMConversationState(preserveUnread = true) {
   state.dmReturnPath = "";
   if (!preserveUnread) {
     state.dmUnreadByPeer = {};
+    persistDMUnreadState();
   }
+  syncNotificationButton();
   syncDMView();
   syncDMPeersPanel();
 }
@@ -619,6 +679,7 @@ function renderHeader() {
   const isLoginRoute = pathname === "/login";
   const activePostID = getActivePostIDFromPath();
   const isPostSearch = Boolean(activePostID);
+  const totalUnread = getTotalUnreadCount();
   const headerSearchValue = isPostSearch ? String(state.commentSearchByPost[String(activePostID)] || "") : String(state.filters.q || "");
   const headerSearchPlaceholder = isPostSearch ? "Search comments or author..." : "Search posts, content or author...";
   return `
@@ -640,7 +701,10 @@ function renderHeader() {
         <button class="icon-btn icon-btn-plain theme-toggle-btn" type="button" data-action="toggle-theme" aria-label="Toggle theme">
           ${state.theme === "dark" ? icon("sun") : icon("moon")}
         </button>
-        <button class="icon-btn icon-btn-plain notification-btn" type="button" data-action="under-construction" aria-label="Notifications">${icon("bell")}</button>
+        <button class="icon-btn icon-btn-plain notification-btn${totalUnread > 0 ? " has-notifications" : ""}" type="button" data-action="open-notifications" aria-label="${escapeHTML(getNotificationsLabel(totalUnread))}">
+          ${icon("bell")}
+          ${totalUnread > 0 ? '<span class="notif-dot" aria-hidden="true"></span>' : ""}
+        </button>
         ${
           user
             ? `
@@ -744,6 +808,27 @@ function renderNotice(msg) {
   return `<div class="notice-box">${escapeHTML(msg)}</div>`;
 }
 
+function syncNotificationButton() {
+  const button = document.querySelector("[data-action='open-notifications']");
+  if (!button) return;
+
+  const totalUnread = getTotalUnreadCount();
+  button.classList.toggle("has-notifications", totalUnread > 0);
+  button.setAttribute("aria-label", getNotificationsLabel(totalUnread));
+
+  const existingDot = button.querySelector(".notif-dot");
+  if (totalUnread > 0) {
+    if (!existingDot) {
+      button.insertAdjacentHTML("beforeend", '<span class="notif-dot" aria-hidden="true"></span>');
+    }
+    return;
+  }
+
+  if (existingDot) {
+    existingDot.remove();
+  }
+}
+
 function normalizeDMPeer(peer) {
   if (!peer || typeof peer !== "object") return null;
   const id = normalizeUserID(peer.id);
@@ -788,7 +873,6 @@ function renderDMPeersList(peers, emptyLabel) {
       const username = normalizeUsername(peer && peer.username);
       const label = getDMPeerLabel(peer);
       const isOnline = state.onlineUserIDs.has(id);
-      const unread = Number(state.dmUnreadByPeer[id] || 0);
       const lastMessageAt = Number(peer && peer.lastMessageAt ? peer.lastMessageAt : 0);
       const activityLabel = lastMessageAt > 0 ? formatDate(new Date(lastMessageAt * 1000).toISOString()) : "No messages yet";
       if (!id || !username) return "";
@@ -805,7 +889,6 @@ function renderDMPeersList(peers, emptyLabel) {
                 <span class="dm-peer-status-dot ${isOnline ? "is-online" : "is-offline"}" aria-hidden="true"></span>
                 <strong>${escapeHTML(label)}</strong>
               </div>
-              ${unread > 0 ? `<span class="dm-peer-badge">${escapeHTML(String(unread))}</span>` : ""}
             </div>
             <div class="dm-peer-subhead">
               <span>@${escapeHTML(username)}</span>
@@ -1148,7 +1231,6 @@ function renderPresenceUsers(users, emptyLabel) {
       const id = normalizeUserID(user && user.id);
       const username = normalizeUsername(user && user.username);
       const name = getDisplayNameOrUsername(user) || `user-${id}`;
-      const unread = Number(state.dmUnreadByPeer[id] || 0);
       if (!id) return "";
       return `
         <div class="presence-user-row">
@@ -1167,7 +1249,7 @@ function renderPresenceUsers(users, emptyLabel) {
                   type="button"
                   data-action="dm-open"
                   data-dm-open="${escapeHTML(id)}"
-                >DM${unread > 0 ? ` (${unread})` : ""}</button>
+                >DM</button>
               `
           }
         </div>
@@ -1274,6 +1356,7 @@ function bindHeaderActions() {
   document.querySelectorAll("[data-action='toggle-theme']").forEach((el) => {
     el.addEventListener("click", toggleTheme);
   });
+  syncNotificationButton();
 
   const logoutBtn = document.querySelector("[data-action='logout']");
   if (logoutBtn) {
@@ -1534,6 +1617,10 @@ async function ensureUser(force = false) {
   }
 
   const currentUserID = normalizeUserID(state.user && state.user.id);
+  if (force || previousUserID !== currentUserID) {
+    state.dmUnreadByPeer = loadPersistedDMUnreadState(currentUserID);
+    syncNotificationButton();
+  }
   if (force || !state.usersLoaded || previousUserID !== currentUserID) {
     await ensureUsersLoaded(force || previousUserID !== currentUserID);
   }
@@ -1684,12 +1771,22 @@ function openDM(peerID) {
   if (!state.user || !peer || peer === getCurrentUserID()) return;
 
   state.dmUnreadByPeer[peer] = 0;
+  persistDMUnreadState();
   if (!isDMRoute()) {
     state.dmReturnPath = `${location.pathname || "/"}${location.search || ""}`;
   }
+  syncNotificationButton();
   syncPresencePanel();
   syncDMPeersPanel();
   navigate(`/dm/${peer}`);
+}
+
+function openNotifications() {
+  if (getTotalUnreadCount() > 0) {
+    navigate("/dm");
+    return;
+  }
+  alert("No new notifications");
 }
 
 function closeDMConversation() {
@@ -1773,7 +1870,9 @@ function handleRealtimeMessage(payload) {
       }
       if (normalizeUserID(message.from && message.from.id) === state.dmPeerID) {
         state.dmUnreadByPeer[state.dmPeerID] = 0;
+        persistDMUnreadState();
       }
+      syncNotificationButton();
       syncDMView({ scrollMode: shouldStickBottom ? "bottom" : "preserve" });
       syncPresencePanel();
       syncDMPeersPanel();
@@ -1784,6 +1883,8 @@ function handleRealtimeMessage(payload) {
       const peerID = normalizeUserID(message.from && message.from.id);
       if (peerID && peerID !== getCurrentUserID()) {
         state.dmUnreadByPeer[peerID] = Number(state.dmUnreadByPeer[peerID] || 0) + 1;
+        persistDMUnreadState();
+        syncNotificationButton();
         syncPresencePanel();
         syncDMPeersPanel();
       }
@@ -1919,6 +2020,8 @@ async function dmView(params) {
   state.dmAttachmentUploading = false;
   if (state.dmPeerID) {
     state.dmUnreadByPeer[state.dmPeerID] = 0;
+    persistDMUnreadState();
+    syncNotificationButton();
     try {
       await loadDMConversation(state.dmPeerID, DM_HISTORY_PAGE_SIZE);
     } catch (err) {
@@ -2713,6 +2816,13 @@ document.addEventListener("click", (e) => {
     state.filters.mine = true;
     state.filters.liked = false;
     navigate("/");
+    return;
+  }
+
+  const notificationsButton = e.target.closest("[data-action='open-notifications']");
+  if (notificationsButton) {
+    e.preventDefault();
+    openNotifications();
     return;
   }
 
