@@ -3,6 +3,7 @@ package ws
 import (
 	"encoding/json"
 	"strconv"
+	"time"
 )
 
 type presenceUser struct {
@@ -21,12 +22,19 @@ type presenceUpdateMessage struct {
 }
 
 type Hub struct {
-	clients    map[int64]map[*Client]struct{}
-	register   chan *Client
-	initialize chan *Client
-	unregister chan *Client
-	broadcast  chan []byte
-	deliver    chan delivery
+	clients                   map[int64]map[*Client]struct{}
+	postSubscribers           map[int64]map[*Client]struct{}
+	postSubscriptionsByClient map[*Client]map[int64]struct{}
+	typingByTarget            map[typingTarget]map[*Client]*typingEntry
+	typingByClient            map[*Client]map[typingTarget]struct{}
+	register                  chan *Client
+	initialize                chan *Client
+	unregister                chan *Client
+	broadcast                 chan []byte
+	deliver                   chan delivery
+	typingEvents              chan typingEvent
+	postSubscriptions         chan postSubscription
+	postUnsubscriptions       chan postSubscription
 }
 
 type delivery struct {
@@ -36,16 +44,26 @@ type delivery struct {
 
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[int64]map[*Client]struct{}),
-		register:   make(chan *Client),
-		initialize: make(chan *Client),
-		unregister: make(chan *Client),
-		broadcast:  make(chan []byte),
-		deliver:    make(chan delivery),
+		clients:                   make(map[int64]map[*Client]struct{}),
+		postSubscribers:           make(map[int64]map[*Client]struct{}),
+		postSubscriptionsByClient: make(map[*Client]map[int64]struct{}),
+		typingByTarget:            make(map[typingTarget]map[*Client]*typingEntry),
+		typingByClient:            make(map[*Client]map[typingTarget]struct{}),
+		register:                  make(chan *Client),
+		initialize:                make(chan *Client),
+		unregister:                make(chan *Client),
+		broadcast:                 make(chan []byte),
+		deliver:                   make(chan delivery),
+		typingEvents:              make(chan typingEvent),
+		postSubscriptions:         make(chan postSubscription),
+		postUnsubscriptions:       make(chan postSubscription),
 	}
 }
 
 func (h *Hub) Run() {
+	expiryTicker := time.NewTicker(typingSweepInterval)
+	defer expiryTicker.Stop()
+
 	for {
 		select {
 		case client := <-h.register:
@@ -58,6 +76,14 @@ func (h *Hub) Run() {
 			h.broadcastPayload(payload, nil)
 		case item := <-h.deliver:
 			h.deliverPayload(item.userIDs, item.payload)
+		case event := <-h.typingEvents:
+			h.handleTypingEvent(event, time.Now().UTC())
+		case subscription := <-h.postSubscriptions:
+			h.subscribeClientToPost(subscription.client, subscription.postID, time.Now().UTC())
+		case subscription := <-h.postUnsubscriptions:
+			h.unsubscribeClientFromPost(subscription.client, subscription.postID, true)
+		case now := <-expiryTicker.C:
+			h.expireTyping(now.UTC())
 		}
 	}
 }
@@ -101,6 +127,7 @@ func (h *Hub) initializeClient(client *Client) {
 	select {
 	case client.send <- payload:
 		client.ready = true
+		h.sendTypingSnapshotsForClient(client, time.Now().UTC())
 	default:
 		h.unregisterClient(client, true)
 	}
@@ -108,6 +135,8 @@ func (h *Hub) initializeClient(client *Client) {
 
 func (h *Hub) unregisterClient(client *Client, notify bool) {
 	client.markUnregistered()
+	h.clearClientTyping(client, notify)
+	h.unsubscribeClientFromAllPosts(client)
 
 	userClients, ok := h.clients[client.userID]
 	if ok {

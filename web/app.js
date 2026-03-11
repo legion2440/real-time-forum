@@ -8,6 +8,14 @@ const ATTACHMENT_TOO_BIG_MESSAGE = "image is too big (max 20MB)";
 const ATTACHMENT_INVALID_TYPE_MESSAGE = "Only JPEG/PNG/GIF allowed";
 const DM_UNREAD_STORAGE_KEY_PREFIX = "forum:dm-unread:v1:";
 const MAX_UNREAD_PEERS = 200;
+const TYPING_IDLE_TIMEOUT_MS = 1500;
+const TYPING_HEARTBEAT_MS = 2000;
+const TYPING_REMOTE_TTL_MS = 5000;
+const TYPING_CLEAR_DELAY_MS = 180;
+const TYPING_SCOPE_DM = "dm";
+const TYPING_SCOPE_POST = "post";
+const TYPING_STATUS_START = "start";
+const TYPING_STATUS_STOP = "stop";
 
 const state = {
   user: null,
@@ -40,6 +48,16 @@ const state = {
   pendingCommentReply: null,
   authSessionNoticeOpen: false,
   theme: getInitialTheme(),
+};
+
+const typingRuntime = {
+  routeDMTargetID: "",
+  routePostID: "",
+  postSubscriptionID: "",
+  localDM: createLocalTypingController(TYPING_SCOPE_DM),
+  localPost: createLocalTypingController(TYPING_SCOPE_POST),
+  remoteDMByPeer: new Map(),
+  remotePostByPost: new Map(),
 };
 
 let realtimeSocket = null;
@@ -278,6 +296,423 @@ function isDMRoute(pathname = location.pathname) {
   return /^\/dm(?:\/|$)/.test(String(pathname || ""));
 }
 
+function createLocalTypingController(scope) {
+  return {
+    scope: normalizeTypingScope(scope),
+    targetID: "",
+    active: false,
+    idleTimer: 0,
+    heartbeatTimer: 0,
+  };
+}
+
+function normalizeTypingScope(value) {
+  const scope = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (scope === TYPING_SCOPE_DM || scope === TYPING_SCOPE_POST) return scope;
+  return "";
+}
+
+function getLocalTypingController(scope) {
+  const normalizedScope = normalizeTypingScope(scope);
+  if (normalizedScope === TYPING_SCOPE_DM) return typingRuntime.localDM;
+  if (normalizedScope === TYPING_SCOPE_POST) return typingRuntime.localPost;
+  return null;
+}
+
+function sendRealtimeJSON(payload) {
+  if (!realtimeSocket || realtimeSocket.readyState !== WebSocket.OPEN) return false;
+  try {
+    realtimeSocket.send(JSON.stringify(payload));
+    return true;
+  } catch (err) {
+    debugWSWarn("ws send failed", err);
+    return false;
+  }
+}
+
+function sendTypingEvent(type, scope, targetID) {
+  const normalizedScope = normalizeTypingScope(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  if (!normalizedScope || !normalizedTargetID) return false;
+  return sendRealtimeJSON({
+    type,
+    scope: normalizedScope,
+    targetId: normalizedTargetID,
+  });
+}
+
+function clearLocalTypingController(controller) {
+  if (!controller) return;
+  if (controller.idleTimer) {
+    clearTimeout(controller.idleTimer);
+    controller.idleTimer = 0;
+  }
+  if (controller.heartbeatTimer) {
+    clearInterval(controller.heartbeatTimer);
+    controller.heartbeatTimer = 0;
+  }
+  controller.active = false;
+  controller.targetID = "";
+}
+
+function scheduleLocalTypingIdleStop(controller) {
+  if (!controller || !controller.active) return;
+  if (controller.idleTimer) {
+    clearTimeout(controller.idleTimer);
+  }
+  controller.idleTimer = setTimeout(() => {
+    stopLocalTyping(controller.scope, { send: true });
+  }, TYPING_IDLE_TIMEOUT_MS);
+}
+
+function ensureLocalTypingHeartbeat(controller) {
+  if (!controller || !controller.active || controller.heartbeatTimer) return;
+  controller.heartbeatTimer = setInterval(() => {
+    if (!controller.active || !controller.targetID) return;
+    if (!sendTypingEvent("typing:heartbeat", controller.scope, controller.targetID)) {
+      clearLocalTypingController(controller);
+    }
+  }, TYPING_HEARTBEAT_MS);
+}
+
+function startLocalTyping(scope, targetID) {
+  if (!state.user) return;
+  const controller = getLocalTypingController(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  if (!controller || !normalizedTargetID) return;
+
+  if (controller.targetID && controller.targetID !== normalizedTargetID) {
+    stopLocalTyping(controller.scope, { send: true });
+  }
+
+  controller.targetID = normalizedTargetID;
+  if (!controller.active) {
+    if (!sendTypingEvent("typing:start", controller.scope, normalizedTargetID)) {
+      return;
+    }
+    controller.active = true;
+  }
+
+  scheduleLocalTypingIdleStop(controller);
+  ensureLocalTypingHeartbeat(controller);
+}
+
+function stopLocalTyping(scope, options = {}) {
+  const controller = getLocalTypingController(scope);
+  if (!controller) return;
+
+  const normalizedTargetID = normalizeUserID(options.targetID || controller.targetID);
+  const shouldSend = options.send !== false;
+  if (shouldSend && controller.active && normalizedTargetID) {
+    sendTypingEvent("typing:stop", controller.scope, normalizedTargetID);
+  }
+
+  clearLocalTypingController(controller);
+}
+
+function stopAllLocalTyping(sendStop = false) {
+  stopLocalTyping(TYPING_SCOPE_DM, { send: sendStop });
+  stopLocalTyping(TYPING_SCOPE_POST, { send: sendStop });
+}
+
+function getRemoteTypingMap(scope) {
+  const normalizedScope = normalizeTypingScope(scope);
+  if (normalizedScope === TYPING_SCOPE_DM) return typingRuntime.remoteDMByPeer;
+  if (normalizedScope === TYPING_SCOPE_POST) return typingRuntime.remotePostByPost;
+  return null;
+}
+
+function getRemoteTypingCollection(scope, targetID, create = false) {
+  const map = getRemoteTypingMap(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  if (!map || !normalizedTargetID) return null;
+  if (!map.has(normalizedTargetID) && create) {
+    map.set(normalizedTargetID, new Map());
+  }
+  return map.get(normalizedTargetID) || null;
+}
+
+function clearRemoteTypingEntryTimers(entry) {
+  if (!entry) return;
+  if (entry.expireTimer) {
+    clearTimeout(entry.expireTimer);
+    entry.expireTimer = 0;
+  }
+  if (entry.removeTimer) {
+    clearTimeout(entry.removeTimer);
+    entry.removeTimer = 0;
+  }
+}
+
+function finalizeRemoteTypingRemoval(scope, targetID, userID, expectedEntry) {
+  const map = getRemoteTypingMap(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  const normalizedUserID = normalizeUserID(userID);
+  if (!map || !normalizedTargetID || !normalizedUserID) return;
+
+  const collection = map.get(normalizedTargetID);
+  if (!collection) return;
+  const currentEntry = collection.get(normalizedUserID);
+  if (!currentEntry || (expectedEntry && currentEntry !== expectedEntry)) return;
+
+  clearRemoteTypingEntryTimers(currentEntry);
+  collection.delete(normalizedUserID);
+  if (collection.size === 0) {
+    map.delete(normalizedTargetID);
+  }
+
+  if (scope === TYPING_SCOPE_DM) {
+    syncDMTypingIndicator();
+    return;
+  }
+  syncPostTypingIndicator(normalizedTargetID);
+}
+
+function setRemoteTypingEntry(scope, targetID, userID, userName) {
+  const normalizedScope = normalizeTypingScope(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  const normalizedUserID = normalizeUserID(userID);
+  if (!normalizedScope || !normalizedTargetID || !normalizedUserID) return;
+
+  const collection = getRemoteTypingCollection(normalizedScope, normalizedTargetID, true);
+  if (!collection) return;
+
+  const entry = collection.get(normalizedUserID) || {
+    id: normalizedUserID,
+    name: userName,
+    expireTimer: 0,
+    removeTimer: 0,
+  };
+  clearRemoteTypingEntryTimers(entry);
+  entry.name = String(userName || "").trim() || getUserDisplayName(normalizedUserID);
+  entry.expireTimer = setTimeout(() => {
+    finalizeRemoteTypingRemoval(normalizedScope, normalizedTargetID, normalizedUserID, entry);
+  }, TYPING_REMOTE_TTL_MS);
+
+  collection.set(normalizedUserID, entry);
+  if (normalizedScope === TYPING_SCOPE_DM) {
+    syncDMTypingIndicator();
+    return;
+  }
+  syncPostTypingIndicator(normalizedTargetID);
+}
+
+function removeRemoteTypingEntry(scope, targetID, userID, delayMs = 0) {
+  const normalizedScope = normalizeTypingScope(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  const normalizedUserID = normalizeUserID(userID);
+  if (!normalizedScope || !normalizedTargetID || !normalizedUserID) return;
+
+  const collection = getRemoteTypingCollection(normalizedScope, normalizedTargetID, false);
+  if (!collection) return;
+
+  const entry = collection.get(normalizedUserID);
+  if (!entry) return;
+
+  if (entry.expireTimer) {
+    clearTimeout(entry.expireTimer);
+    entry.expireTimer = 0;
+  }
+  if (entry.removeTimer) {
+    clearTimeout(entry.removeTimer);
+    entry.removeTimer = 0;
+  }
+
+  if (delayMs > 0) {
+    entry.removeTimer = setTimeout(() => {
+      finalizeRemoteTypingRemoval(normalizedScope, normalizedTargetID, normalizedUserID, entry);
+    }, delayMs);
+    return;
+  }
+
+  finalizeRemoteTypingRemoval(normalizedScope, normalizedTargetID, normalizedUserID, entry);
+}
+
+function clearRemoteTypingScopeTarget(scope, targetID) {
+  const map = getRemoteTypingMap(scope);
+  const normalizedTargetID = normalizeUserID(targetID);
+  if (!map || !normalizedTargetID) return;
+
+  const collection = map.get(normalizedTargetID);
+  if (!collection) return;
+
+  collection.forEach((entry) => {
+    clearRemoteTypingEntryTimers(entry);
+  });
+  map.delete(normalizedTargetID);
+
+  if (normalizeTypingScope(scope) === TYPING_SCOPE_DM) {
+    syncDMTypingIndicator();
+    return;
+  }
+  syncPostTypingIndicator(normalizedTargetID);
+}
+
+function clearAllRemoteTypingState() {
+  typingRuntime.remoteDMByPeer.forEach((collection) => {
+    collection.forEach((entry) => {
+      clearRemoteTypingEntryTimers(entry);
+    });
+  });
+  typingRuntime.remotePostByPost.forEach((collection) => {
+    collection.forEach((entry) => {
+      clearRemoteTypingEntryTimers(entry);
+    });
+  });
+
+  typingRuntime.remoteDMByPeer.clear();
+  typingRuntime.remotePostByPost.clear();
+  syncDMTypingIndicator();
+  syncPostTypingIndicator();
+}
+
+function syncActivePostTypingSubscription(postID, force = false) {
+  const normalizedPostID = normalizeUserID(postID);
+  const previousPostID = normalizeUserID(typingRuntime.postSubscriptionID);
+
+  if (!normalizedPostID) {
+    if (previousPostID) {
+      unsubscribePostTyping(previousPostID);
+    }
+    typingRuntime.postSubscriptionID = "";
+    return;
+  }
+
+  if (previousPostID && previousPostID !== normalizedPostID) {
+    unsubscribePostTyping(previousPostID);
+  }
+
+  typingRuntime.postSubscriptionID = normalizedPostID;
+  if (!force && previousPostID === normalizedPostID) return;
+  sendTypingEvent("typing:subscribe", TYPING_SCOPE_POST, normalizedPostID);
+}
+
+function unsubscribePostTyping(postID = typingRuntime.postSubscriptionID) {
+  const normalizedPostID = normalizeUserID(postID);
+  if (!normalizedPostID) return;
+  sendTypingEvent("typing:unsubscribe", TYPING_SCOPE_POST, normalizedPostID);
+  if (normalizeUserID(typingRuntime.postSubscriptionID) === normalizedPostID) {
+    typingRuntime.postSubscriptionID = "";
+  }
+}
+
+function handleTypingRouteTransition(nextPath = location.pathname) {
+  const nextDMPeerID = getActiveDMPeerIDFromPath(nextPath);
+  const nextPostID = normalizeUserID(getActivePostIDFromPath(nextPath) || "");
+  const previousDMPeerID = normalizeUserID(typingRuntime.routeDMTargetID);
+  const previousPostID = normalizeUserID(typingRuntime.routePostID);
+
+  if (previousDMPeerID && previousDMPeerID !== nextDMPeerID) {
+    stopLocalTyping(TYPING_SCOPE_DM, { send: true });
+    clearRemoteTypingScopeTarget(TYPING_SCOPE_DM, previousDMPeerID);
+  }
+
+  if (previousPostID && previousPostID !== nextPostID) {
+    stopLocalTyping(TYPING_SCOPE_POST, { send: true, targetID: previousPostID });
+    unsubscribePostTyping(previousPostID);
+    clearRemoteTypingScopeTarget(TYPING_SCOPE_POST, previousPostID);
+  }
+
+  typingRuntime.routeDMTargetID = nextDMPeerID;
+  typingRuntime.routePostID = nextPostID;
+}
+
+function getTypingUserName(userID, value) {
+  const normalized = String(value || "").trim();
+  if (normalized) return normalized;
+  return getUserDisplayName(userID);
+}
+
+function handleTypingUpdate(payload) {
+  const scope = normalizeTypingScope(payload && payload.scope);
+  const status = String((payload && payload.status) || "")
+    .trim()
+    .toLowerCase();
+  const targetID = normalizeUserID(payload && payload.targetId);
+  const userID = normalizeUserID(payload && payload.user && payload.user.id);
+  if (!scope || !targetID || !userID || userID === getCurrentUserID()) return;
+  if (status !== TYPING_STATUS_START && status !== TYPING_STATUS_STOP) return;
+
+  const userName = getTypingUserName(userID, payload && payload.user && payload.user.name);
+
+  if (scope === TYPING_SCOPE_DM) {
+    if (targetID !== getCurrentUserID()) return;
+    const activePeerID = normalizeUserID(state.dmPeerID);
+    if (!activePeerID || activePeerID !== userID) return;
+
+    if (status === TYPING_STATUS_START) {
+      setRemoteTypingEntry(scope, activePeerID, userID, userName);
+    } else {
+      removeRemoteTypingEntry(scope, activePeerID, userID, TYPING_CLEAR_DELAY_MS);
+    }
+    return;
+  }
+
+  const activePostID = normalizeUserID(getActivePostIDFromPath() || "");
+  if (!activePostID || activePostID !== targetID) return;
+  if (status === TYPING_STATUS_START) {
+    setRemoteTypingEntry(scope, activePostID, userID, userName);
+  } else {
+    removeRemoteTypingEntry(scope, activePostID, userID, TYPING_CLEAR_DELAY_MS);
+  }
+}
+
+function getSortedRemoteTypers(scope, targetID) {
+  const collection = getRemoteTypingCollection(scope, targetID, false);
+  if (!collection || collection.size === 0) return [];
+  return Array.from(collection.values()).sort((a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base", numeric: true })
+  );
+}
+
+function getDMTypingLabel(peerID = state.dmPeerID) {
+  const typers = getSortedRemoteTypers(TYPING_SCOPE_DM, peerID);
+  if (typers.length === 0) return "";
+  return `${typers[0].name} is typing`;
+}
+
+function getPostTypingLabel(postID = getActivePostIDFromPath()) {
+  const typers = getSortedRemoteTypers(TYPING_SCOPE_POST, postID);
+  if (typers.length === 0) return "";
+  if (typers.length === 1) {
+    return `${typers[0].name} is typing`;
+  }
+  const othersCount = typers.length - 1;
+  return `${typers[0].name} and ${othersCount} other${othersCount === 1 ? "" : "s"} are typing`;
+}
+
+function renderTypingIndicator(label) {
+  const text = String(label || "").trim();
+  if (!text) return "";
+  return `
+    <div class="typing-indicator" role="status" aria-live="polite">
+      <span class="typing-indicator-text">${escapeHTML(text)}</span>
+      <span class="typing-dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+    </div>
+  `;
+}
+
+function syncDMTypingIndicator() {
+  const slot = document.getElementById("dm-typing-indicator");
+  if (!slot) return;
+  slot.innerHTML = renderTypingIndicator(getDMTypingLabel(state.dmPeerID));
+}
+
+function syncPostTypingIndicator(postID = getActivePostIDFromPath()) {
+  const slot = document.getElementById("post-typing-indicator");
+  if (!slot) return;
+  slot.innerHTML = renderTypingIndicator(getPostTypingLabel(postID));
+}
+
+function handleRealtimeDisconnected() {
+  stopAllLocalTyping(false);
+  clearAllRemoteTypingState();
+}
+
 function clearDMState() {
   state.dmPeerID = "";
   state.dmPeers = [];
@@ -325,6 +760,11 @@ function clearPresenceState() {
 }
 
 function clearAuthenticatedState() {
+  stopAllLocalTyping(false);
+  clearAllRemoteTypingState();
+  typingRuntime.routeDMTargetID = "";
+  typingRuntime.routePostID = "";
+  typingRuntime.postSubscriptionID = "";
   state.user = null;
   state.filters.mine = false;
   state.filters.liked = false;
@@ -339,6 +779,7 @@ function closeRealtimeSocket() {
   if (!realtimeSocket) return;
   const socket = realtimeSocket;
   realtimeSocket = null;
+  handleRealtimeDisconnected();
   if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) return;
   socket.close();
 }
@@ -359,6 +800,10 @@ function ensureRealtimeSocket() {
   socket.onopen = () => {
     if (realtimeSocket !== socket) return;
     debugWS("ws connected");
+    const activePostID = normalizeUserID(getActivePostIDFromPath() || "");
+    if (activePostID) {
+      syncActivePostTypingSubscription(activePostID, true);
+    }
   };
 
   socket.onmessage = (event) => {
@@ -376,6 +821,7 @@ function ensureRealtimeSocket() {
       realtimeSocket = null;
     }
     debugWS("ws closed");
+    handleRealtimeDisconnected();
   };
 }
 
@@ -995,6 +1441,9 @@ function renderDMViewContent() {
           </div>
         `
     }
+    <div id="dm-typing-indicator" class="typing-indicator-slot">
+      ${renderTypingIndicator(getDMTypingLabel(state.dmPeerID))}
+    </div>
     <form id="dm-form" class="form-stack">
       <label class="field">
         <span>Message</span>
@@ -1112,6 +1561,7 @@ function syncDMView(options = {}) {
   }
 
   bindDMThreadScroll(thread);
+  syncDMTypingIndicator();
 }
 
 function syncDMComposerAttachmentPreview() {
@@ -1932,6 +2382,11 @@ function handleRealtimeMessage(payload) {
     return;
   }
 
+  if (payload.type === "typing:update") {
+    handleTypingUpdate(payload);
+    return;
+  }
+
   if (payload.type === "pm:new") {
     const message = normalizeDMMessage(payload.message);
     if (!message) return;
@@ -1940,9 +2395,12 @@ function handleRealtimeMessage(payload) {
     if (isMessageForPeer(message, state.dmPeerID)) {
       const thread = document.getElementById("dm-thread");
       const shouldStickBottom = isDMThreadNearBottom(thread);
+      const fromUserID = normalizeUserID(message.from && message.from.id);
       appendDMMessage(message);
       if (normalizeUserID(message.from && message.from.id) === getCurrentUserID()) {
         state.dmDraftAttachment = null;
+      } else if (fromUserID) {
+        removeRemoteTypingEntry(TYPING_SCOPE_DM, fromUserID, fromUserID, 0);
       }
       void markDMConversationRead(state.dmPeerID, message.id).catch((err) => {
         debugWSWarn("dm read sync failed", err);
@@ -2693,6 +3151,9 @@ async function postView(params) {
         <h2>Comments</h2>
         <p>${commentQuery ? `${comments.length} found` : comments.length ? `${comments.length} total` : "No comments yet"}</p>
       </div>
+      <div id="post-typing-indicator" class="typing-indicator-slot">
+        ${renderTypingIndicator(getPostTypingLabel(post.id))}
+      </div>
       <div class="comments-stack">
         ${comments.length ? renderCommentThreads(comments) : renderEmpty("No comments yet", "Be the first to leave a comment.")}
       </div>
@@ -2703,6 +3164,8 @@ async function postView(params) {
     html: renderLayout({ mode: "post", hideHeading: true, content }),
     onMount: () => {
       bindHeaderActions();
+      syncActivePostTypingSubscription(post.id);
+      syncPostTypingIndicator(post.id);
       bindPostReactions();
       bindCommentReactions();
       bindCommentComposerAutosize();
@@ -2723,6 +3186,7 @@ async function postView(params) {
                 ...(Number.isFinite(parentID) && parentID > 0 ? { parent_id: parentID } : {}),
               }),
             });
+            stopLocalTyping(TYPING_SCOPE_POST, { send: true, targetID: String(post.id) });
             if (replyUI && replyUI.clearReply) replyUI.clearReply();
             router();
           } catch (err) {
@@ -2769,6 +3233,7 @@ function matchRoute(pathname) {
 
 async function router() {
   applyTheme(state.theme);
+  handleTypingRouteTransition(location.pathname);
   if (state.user && maybeRedirectToProfileSetup()) return;
   const match = matchRoute(location.pathname) || { route: routes[0], params: {} };
   const activePeerID = getActiveDMPeerIDFromPath(location.pathname);
@@ -2938,6 +3403,7 @@ document.addEventListener("submit", (e) => {
   }
 
   try {
+    stopLocalTyping(TYPING_SCOPE_DM, { send: true });
     sendDMMessage(body, attachment);
     form.reset();
   } catch (err) {
@@ -3020,6 +3486,39 @@ document.addEventListener("change", async (e) => {
     state.postAttachmentUploading = false;
     syncPostAttachmentControls();
     syncPostAttachmentPreview();
+  }
+});
+
+document.addEventListener("input", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement) || !state.user) return;
+
+  const dmTextarea = target.closest("#dm-form textarea[name='body']");
+  if (dmTextarea) {
+    const peerID = normalizeUserID(state.dmPeerID);
+    if (peerID) startLocalTyping(TYPING_SCOPE_DM, peerID);
+    return;
+  }
+
+  const commentTextarea = target.closest("#comment-form textarea[name='body']");
+  if (!commentTextarea) return;
+
+  const postID = normalizeUserID(getActivePostIDFromPath() || "");
+  if (!postID) return;
+  startLocalTyping(TYPING_SCOPE_POST, postID);
+});
+
+document.addEventListener("focusout", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement) || !state.user) return;
+
+  if (target.closest("#dm-form textarea[name='body']")) {
+    stopLocalTyping(TYPING_SCOPE_DM, { send: true });
+    return;
+  }
+
+  if (target.closest("#comment-form textarea[name='body']")) {
+    stopLocalTyping(TYPING_SCOPE_POST, { send: true });
   }
 });
 

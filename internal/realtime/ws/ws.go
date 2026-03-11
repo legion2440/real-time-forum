@@ -45,6 +45,12 @@ type pmSendRequest struct {
 	AttachmentID string            `json:"attachmentId,omitempty"`
 }
 
+type typingSignalRequest struct {
+	Type     string `json:"type"`
+	Scope    string `json:"scope"`
+	TargetID string `json:"targetId"`
+}
+
 type privateMessageRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
@@ -178,6 +184,16 @@ func (c *Client) handleIncomingMessage(raw []byte) {
 	switch envelope.Type {
 	case "pm:send":
 		c.handlePrivateMessageSend(raw)
+	case "typing:start":
+		c.handleTypingSignal(raw, typingEventStart)
+	case "typing:stop":
+		c.handleTypingSignal(raw, typingEventStop)
+	case "typing:heartbeat":
+		c.handleTypingSignal(raw, typingEventHeartbeat)
+	case "typing:subscribe":
+		c.handleTypingSubscription(raw, true)
+	case "typing:unsubscribe":
+		c.handleTypingSubscription(raw, false)
 	default:
 		return
 	}
@@ -223,6 +239,63 @@ func (c *Client) handlePrivateMessageSend(raw []byte) {
 		userIDs: []int64{c.userID, toID},
 		payload: payload,
 	}
+
+	c.hub.typingEvents <- typingEvent{
+		client:   c,
+		scope:    typingScopeDM,
+		targetID: toID,
+		kind:     typingEventStop,
+	}
+}
+
+func (c *Client) handleTypingSignal(raw []byte, kind typingEventKind) {
+	scope, targetID, ok := parseTypingSignalTarget(raw)
+	if !ok {
+		return
+	}
+	if scope == typingScopeDM && targetID == c.userID {
+		return
+	}
+
+	c.hub.typingEvents <- typingEvent{
+		client:   c,
+		scope:    scope,
+		targetID: targetID,
+		kind:     kind,
+	}
+}
+
+func (c *Client) handleTypingSubscription(raw []byte, subscribe bool) {
+	scope, targetID, ok := parseTypingSignalTarget(raw)
+	if !ok || scope != typingScopePost {
+		return
+	}
+
+	subscription := postSubscription{
+		client: c,
+		postID: targetID,
+	}
+
+	if subscribe {
+		c.hub.postSubscriptions <- subscription
+		return
+	}
+	c.hub.postUnsubscriptions <- subscription
+}
+
+func parseTypingSignalTarget(raw []byte) (string, int64, bool) {
+	var req typingSignalRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return "", 0, false
+	}
+
+	scope := strings.ToLower(strings.TrimSpace(req.Scope))
+	targetID, err := strconv.ParseInt(strings.TrimSpace(req.TargetID), 10, 64)
+	if err != nil || targetID <= 0 {
+		return "", 0, false
+	}
+
+	return scope, targetID, true
 }
 
 func (c *Client) writePump() {
