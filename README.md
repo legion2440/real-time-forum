@@ -1,4 +1,4 @@
-## real-time-forum
+## real-time-forum (typing-in-progress)
 
 Учебный веб-форум на Go + SQLite с SPA (1 HTML) на чистом JavaScript, без фронтенд-фреймворков и без CDN.
 Проект собран по заданию "real-time-forum": личные сообщения + real-time (WebSocket) поверх базового форума (посты/комменты). 
@@ -20,6 +20,7 @@
 - Посты с категориями.
 - Комментарии к постам.
 - Лента постов, комментарии видны после открытия поста.
+- Typing in progress для комментариев: пользователи, открывшие один и тот же пост, видят в real time, что кто-то печатает комментарий.
 
 ### Private Messages (DM) + real-time
 - Список пользователей для чата: online/offline, видим всегда.
@@ -29,6 +30,7 @@
   - Пангинация: при скролле вверх догружается еще по 10, с throttle (без спама scroll event).
 - Формат сообщения: дата отправки + имя пользователя.
 - Real-time доставка сообщений через WebSocket без refresh.
+- Typing in progress для DM: собеседник видит в real time, что пользователь печатает сообщение.
 
 ## Bonus (сверх задания)
 - Профили пользователей (display name + необязательные поля first/last/age/gender).
@@ -159,7 +161,7 @@ real-time-forum/
 │  ├─ domain/                  # доменные сущности/типы
 │  ├─ http/                    # HTTP-слой: router, handlers, middleware, cookies, responses/errors
 │  ├─ platform/                # утилиты: id/uuid, clock/time
-│  ├─ realtime/ws/             # WS hub + события presence/pm
+│  ├─ realtime/ws/             # WS hub + события presence/pm/typing, подписки на post view
 │  ├─ repo/                    # слой доступа к данным (интерфейсы + реализации)
 │  │  └─ sqlite/               # SQLite: schema.sql, миграции/legacy-safe апдейты, запросы, тесты
 │  └─ service/                 # use cases: auth, posts, private messages, attachments
@@ -200,4 +202,4 @@ real-time-forum/
 
 ## Авторы
 - Nazar Yestayev (@nyestaye / @legion2440)
-- Rauan Yelubayeva (@ryelubay)
+- Atabek Furkat (@abakhram)
