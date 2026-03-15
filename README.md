@@ -1,4 +1,4 @@
-## real-time-forum (typing-in-progress)
+## forum (authentication)
 
 Учебный веб-форум на Go + SQLite с SPA (1 HTML) на чистом JavaScript, без фронтенд-фреймворков и без CDN.
 Проект собран по заданию "real-time-forum": личные сообщения + real-time (WebSocket) поверх базового форума (посты/комменты). 
@@ -15,6 +15,31 @@
 Примечание:
 - Поля профиля (first name / last name / age / gender) сделаны необязательными на первичной регистрации.
   После первого логина пользователь попадает на страницу профиля (profile setup) и может заполнить их там.
+
+### Authentication Methods
+- `local`: email or username + password
+- `google`: OAuth 2.0 Authorization Code Flow
+- `github`: OAuth 2.0 Authorization Code Flow
+- `facebook`: OAuth 2.0 Authorization Code Flow
+
+OAuth is implemented through a provider registry (`internal/oauth`) and generic handlers:
+- `GET /auth/{provider}/login`
+- `GET /auth/{provider}/callback`
+
+The architecture is intentionally extensible: adding a new provider such as Steam, Twitch, or My.Games only requires a new provider adapter that implements the shared interface and registration in the provider registry.
+
+### Linked Accounts And Merge Behavior
+- Local login/register remains active and is not replaced by OAuth.
+- Profile page includes `Linked accounts` with provider status: `linked` / `not linked`.
+- A logged-in user can explicitly link a provider from profile.
+- Unlink is blocked if it would leave the account without any valid sign-in method.
+- Matching email from OAuth does not auto-link or auto-merge a logged-out user.
+- If OAuth returns an email already used by an existing forum account, the app creates an explicit confirmation flow.
+- If two existing accounts need to be combined, the app creates an explicit merge flow.
+- Canonical account is selected by `created_at` (older account wins by default).
+- Default display name during merge also comes from the older account and must be confirmed explicitly.
+- Merge is transactional and moves linked identities plus current user-owned forum data to the canonical account.
+- If merge would be unsafe for a known edge case, it is rejected explicitly instead of partially continuing.
 
 ### Posts and Comments
 - Посты с категориями.
@@ -71,10 +96,50 @@ go run ./cmd/server
 
 ### Переменные окружения
 - `FORUM_DB_PATH` - путь к SQLite файлу (по умолчанию `forum.db`).
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URL`
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+- `GITHUB_REDIRECT_URL`
+- `FACEBOOK_CLIENT_ID`
+- `FACEBOOK_CLIENT_SECRET`
+- `FACEBOOK_REDIRECT_URL`
+- `DEBUG_500`
 
 Пример:
 ```bash
 export FORUM_DB_PATH=./forum.db
+```
+
+OAuth providers are optional. If provider env vars are missing, local auth still works and the missing provider is simply not exposed in the UI.
+
+### Local OAuth Setup
+1. Create OAuth apps in Google, GitHub, and/or Facebook developer consoles.
+2. Configure each provider callback URL to point to this app:
+   - Google: `http://127.0.0.1:8080/auth/google/callback`
+   - GitHub: `http://127.0.0.1:8080/auth/github/callback`
+   - Facebook: `http://127.0.0.1:8080/auth/facebook/callback`
+3. Export matching env vars before `go run ./cmd/server`.
+4. Start the server and use `Login` / `Register` page buttons:
+   - `Continue with Google`
+   - `Continue with GitHub`
+   - `Continue with Facebook`
+
+Example:
+```bash
+export FORUM_DB_PATH=./forum.db
+export GOOGLE_CLIENT_ID=your-google-client-id
+export GOOGLE_CLIENT_SECRET=your-google-client-secret
+export GOOGLE_REDIRECT_URL=http://127.0.0.1:8080/auth/google/callback
+
+export GITHUB_CLIENT_ID=your-github-client-id
+export GITHUB_CLIENT_SECRET=your-github-client-secret
+export GITHUB_REDIRECT_URL=http://127.0.0.1:8080/auth/github/callback
+
+export FACEBOOK_CLIENT_ID=your-facebook-client-id
+export FACEBOOK_CLIENT_SECRET=your-facebook-client-secret
+export FACEBOOK_REDIRECT_URL=http://127.0.0.1:8080/auth/facebook/callback
 ```
 
 ### Docker
@@ -202,4 +267,7 @@ real-time-forum/
 
 ## Авторы
 - Nazar Yestayev (@nyestaye / @legion2440)
-- Atabek Furkat (@abakhram)
+- Dastan Gabbassov (@dgabbass)
+- Nurgul Ilyassova (@nilyasso)
+- Davyd Semenov (@mmujajov)
+- Yernazar Uxumbayev (@yuxumbay)

@@ -47,6 +47,8 @@ const state = {
   commentSearchByPost: {},
   pendingCommentReply: null,
   authSessionNoticeOpen: false,
+  authProviders: [],
+  authProvidersLoaded: false,
   theme: getInitialTheme(),
 };
 
@@ -256,12 +258,207 @@ function getProfileFieldValue(profile, key) {
   return String((profile && profile[key]) || "").trim();
 }
 
+function getSearchParam(name, search = location.search) {
+  return new URLSearchParams(String(search || "")).get(name) || "";
+}
+
+function getAuthProviders() {
+  return Array.isArray(state.authProviders) ? state.authProviders : [];
+}
+
+function getProviderLabel(providerName) {
+  const normalized = String(providerName || "").trim().toLowerCase();
+  const match = getAuthProviders().find((provider) => String(provider && provider.name || "").trim().toLowerCase() === normalized);
+  if (match && String(match.label || "").trim()) return String(match.label || "").trim();
+  switch (normalized) {
+    case "google":
+      return "Google";
+    case "github":
+      return "GitHub";
+    case "facebook":
+      return "Facebook";
+    default:
+      return normalized || "Provider";
+  }
+}
+
+function providerBadge(providerName) {
+  const normalized = String(providerName || "").trim().toLowerCase();
+  switch (normalized) {
+    case "google":
+      return "G";
+    case "github":
+      return "GH";
+    case "facebook":
+      return "f";
+    default:
+      return normalized.slice(0, 2).toUpperCase() || "?";
+  }
+}
+
+function getOAuthStartPath(providerName, options = {}) {
+  const provider = encodeURIComponent(String(providerName || "").trim().toLowerCase());
+  const params = new URLSearchParams();
+  if (options.intent) params.set("intent", String(options.intent).trim());
+  if (options.nextPath) params.set("next", String(options.nextPath).trim());
+  return `/auth/${provider}/login${params.toString() ? `?${params.toString()}` : ""}`;
+}
+
+function getLinkedAccounts() {
+  return Array.isArray(state.user && state.user.linkedAccounts) ? state.user.linkedAccounts : [];
+}
+
+function getLinkedAccountStatus(providerName) {
+  const normalized = String(providerName || "").trim().toLowerCase();
+  return getLinkedAccounts().find((item) => String(item && item.provider || "").trim().toLowerCase() === normalized) || null;
+}
+
+function getProfileStatusNotice() {
+  const linked = getSearchParam("linked");
+  if (linked) return `${getProviderLabel(linked)} account linked.`;
+  if (getSearchParam("merged") === "1") return "Accounts merged successfully.";
+  const authError = getSearchParam("authError");
+  if (authError) return authError;
+  return "";
+}
+
+function getAuthStatusNotice() {
+  const authError = getSearchParam("authError");
+  if (authError) return authError;
+  if (getSearchParam("linked")) return `${getProviderLabel(getSearchParam("linked"))} account linked.`;
+  return "";
+}
+
+function renderOAuthButtons(options = {}) {
+  const providers = getAuthProviders().filter((provider) => provider && provider.enabled);
+  if (!providers.length) return "";
+
+  const intent = String(options.intent || "login").trim();
+  const nextPath = String(options.nextPath || "").trim();
+  const title = String(options.title || "Continue with").trim();
+
+  return `
+    <div class="oauth-block">
+      <div class="oauth-separator"><span>${escapeHTML(title)}</span></div>
+      <div class="oauth-grid">
+        ${providers.map((provider) => `
+          <a class="btn btn-ghost oauth-btn" href="${escapeHTML(getOAuthStartPath(provider.name, { intent, nextPath }))}">
+            <span class="oauth-badge oauth-badge-${escapeHTML(String(provider.name || "").trim().toLowerCase())}">${escapeHTML(providerBadge(provider.name))}</span>
+            <span>Continue with ${escapeHTML(provider.label || getProviderLabel(provider.name))}</span>
+          </a>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderLinkedAccountsPanel(username) {
+  const linkedAccounts = getLinkedAccounts();
+  const enabledProviders = getAuthProviders().filter((provider) => provider && provider.enabled);
+  const providerMap = new Map(enabledProviders.map((provider) => [String(provider.name || "").trim().toLowerCase(), provider]));
+  linkedAccounts.forEach((item) => {
+    const provider = String(item && item.provider || "").trim().toLowerCase();
+    if (!providerMap.has(provider)) {
+      providerMap.set(provider, { name: provider, label: getProviderLabel(provider), enabled: true });
+    }
+  });
+
+  const rows = Array.from(providerMap.values())
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+    .map((provider) => {
+      const status = getLinkedAccountStatus(provider.name);
+      const linked = Boolean(status && status.linked);
+      const nextPath = getProfilePath(username);
+      return `
+        <div class="linked-account-row">
+          <div class="linked-account-main">
+            <div class="linked-account-name">
+              <span class="oauth-badge oauth-badge-${escapeHTML(String(provider.name || "").trim().toLowerCase())}">${escapeHTML(providerBadge(provider.name))}</span>
+              <strong>${escapeHTML(provider.label || getProviderLabel(provider.name))}</strong>
+            </div>
+            <div class="linked-account-meta">
+              <span class="status-pill ${linked ? "is-linked" : ""}">${linked ? "linked" : "not linked"}</span>
+              ${linked && status && status.email ? `<span>${escapeHTML(status.email)}</span>` : ""}
+            </div>
+          </div>
+          <div class="linked-account-actions">
+            ${
+              linked
+                ? `<button class="btn btn-ghost btn-compact" type="button" data-action="unlink-provider" data-provider="${escapeHTML(provider.name)}" ${status && status.canUnlink ? "" : "disabled"}>${status && status.canUnlink ? "Unlink" : "Protected"}</button>`
+                : `<a class="btn btn-primary btn-compact" href="${escapeHTML(getOAuthStartPath(provider.name, { intent: "link", nextPath }))}">Link</a>`
+            }
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="surface form-card linked-accounts-card">
+      <div class="section-row">
+        <h2>Linked accounts</h2>
+        <p>Local auth stays available. External providers can be linked or unlinked safely.</p>
+      </div>
+      <div class="linked-accounts-list">
+        ${rows || '<div class="side-note">No OAuth providers configured.</div>'}
+      </div>
+      <form id="local-merge-form" class="form-stack linked-accounts-merge-form">
+        <div class="form-intro">
+          <h2>Merge existing local account</h2>
+          <p>Explicitly confirm the local account you want to merge into this profile.</p>
+        </div>
+        <label class="field"><span>Email or username</span><input type="text" name="login" required /></label>
+        <label class="field"><span>Password</span><input type="password" name="password" required /></label>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit">Review merge</button>
+        </div>
+        <div id="local-merge-error"></div>
+      </form>
+    </section>
+  `;
+}
+
 function renderProfileField(label, value) {
   const content = String(value || "").trim() || "Not set";
   return `
     <div class="profile-field-row">
       <span class="profile-field-label">${escapeHTML(label)}</span>
       <strong>${escapeHTML(content)}</strong>
+    </div>
+  `;
+}
+
+function renderLinkedProviderPills(linkedAccounts) {
+  if (!Array.isArray(linkedAccounts) || !linkedAccounts.length) {
+    return '<span class="side-note">No linked providers</span>';
+  }
+
+  return linkedAccounts
+    .map((item) => `
+      <span class="provider-pill">
+        <span class="oauth-badge oauth-badge-${escapeHTML(String(item.provider || "").trim().toLowerCase())}">${escapeHTML(providerBadge(item.provider))}</span>
+        <span>${escapeHTML(getProviderLabel(item.provider))}</span>
+      </span>
+    `)
+    .join("");
+}
+
+function renderFlowUserSummaryCard(title, account) {
+  if (!account || typeof account !== "object") return "";
+  return `
+    <div class="flow-summary-card">
+      <div class="flow-summary-head">
+        <strong>${escapeHTML(title)}</strong>
+        <span class="status-pill ${account.hasPassword ? "is-linked" : ""}">${account.hasPassword ? "local password" : "social only"}</span>
+      </div>
+      <div class="flow-summary-grid">
+        ${renderProfileField("Display name", account.displayName || account.username || "user")}
+        ${renderProfileField("Username", `@${normalizeUsername(account.username)}`)}
+        ${renderProfileField("Email", account.email || "Not set")}
+      </div>
+      <div class="provider-pill-row">
+        ${renderLinkedProviderPills(account.linkedAccounts)}
+      </div>
     </div>
   `;
 }
@@ -2124,6 +2321,29 @@ async function ensureUser(force = false) {
   ensureRealtimeSocket();
 }
 
+async function ensureAuthProviders(force = false) {
+  if (state.authProvidersLoaded && !force) {
+    return;
+  }
+
+  try {
+    const providers = await apiFetch("/api/auth/providers", { suppressSessionEndedUX: true });
+    state.authProviders = Array.isArray(providers)
+      ? providers
+          .filter((provider) => provider && provider.enabled)
+          .map((provider) => ({
+            name: String(provider.name || "").trim().toLowerCase(),
+            label: String(provider.label || "").trim(),
+            enabled: Boolean(provider.enabled),
+          }))
+      : [];
+  } catch (_) {
+    state.authProviders = [];
+  } finally {
+    state.authProvidersLoaded = true;
+  }
+}
+
 async function ensureUsersLoaded(force = false) {
   if (!state.user) {
     clearPresenceState();
@@ -2600,6 +2820,7 @@ async function dmIndexView() {
 
 async function profileView(params) {
   await ensureUser(true);
+  await ensureAuthProviders();
   if (state.user) {
     await ensureUsersLoaded();
   }
@@ -2643,6 +2864,8 @@ async function profileView(params) {
   const selfLastName = getProfileFieldValue(editableProfile, "lastName");
   const selfAge = getProfileAgeValue(editableProfile);
   const selfGender = getProfileFieldValue(editableProfile, "gender");
+  const statusNotice = isSelf ? getProfileStatusNotice() : "";
+  const profilePath = getProfilePath(routeUsername);
 
   const content = `
     <section class="page-head">
@@ -2656,6 +2879,7 @@ async function profileView(params) {
         <h2>${isSelf ? "Your profile" : "Profile"}</h2>
         <p>${isSelf ? "Display name is optional. Username stays unchanged." : "Public profile."}</p>
       </div>
+      ${statusNotice ? renderNotice(statusNotice) : ""}
       ${setupMode ? renderNotice("Complete your profile setup now or skip. You can update these fields later from your profile.") : ""}
       ${
         isSelf
@@ -2701,6 +2925,7 @@ async function profileView(params) {
           `
       }
     </section>
+    ${isSelf ? renderLinkedAccountsPanel(routeUsername) : ""}
   `;
 
   return {
@@ -2732,7 +2957,7 @@ async function profileView(params) {
               }),
             });
             await ensureUser(true);
-            navigate("/");
+            navigate(profilePath);
           } catch (err) {
             if (err && err.handled) return;
             if (errorBox) {
@@ -2753,11 +2978,55 @@ async function profileView(params) {
               body: JSON.stringify({ skip: true }),
             });
             await ensureUser(true);
-            navigate("/");
+            navigate(profilePath);
           } catch (err) {
             if (err && err.handled) return;
             if (errorBox) {
               errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to update profile.");
+            }
+          }
+        });
+      }
+
+      document.querySelectorAll("[data-action='unlink-provider']").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const provider = button.getAttribute("data-provider");
+          const errorBox = document.getElementById("local-merge-error");
+          if (errorBox) errorBox.innerHTML = "";
+          try {
+            await apiFetch(`/api/profile/linked-accounts/${encodeURIComponent(provider)}/unlink`, { method: "POST" });
+            await ensureUser(true);
+            router();
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) {
+              errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to unlink provider.");
+            }
+          }
+        });
+      });
+
+      const localMergeForm = document.getElementById("local-merge-form");
+      if (localMergeForm) {
+        localMergeForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const errorBox = document.getElementById("local-merge-error");
+          if (errorBox) errorBox.innerHTML = "";
+
+          const data = new FormData(localMergeForm);
+          try {
+            const result = await apiFetch("/api/profile/local-account/merge", {
+              method: "POST",
+              body: JSON.stringify({
+                login: data.get("login"),
+                password: data.get("password"),
+              }),
+            });
+            navigate(result && result.redirectPath ? result.redirectPath : profilePath);
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) {
+              errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to start merge flow.");
             }
           }
         });
@@ -2768,6 +3037,8 @@ async function profileView(params) {
 
 function renderAuthLayout(kind) {
   const isLogin = kind === "login";
+  const authNotice = getAuthStatusNotice();
+  const nextPath = getSearchParam("next") || "/";
   const content = `
     <section class="auth-grid">
       <div class="surface auth-info">
@@ -2786,6 +3057,7 @@ function renderAuthLayout(kind) {
             <h2>${isLogin ? "Login" : "Register"}</h2>
             <p>${isLogin ? "Use your email or username and password." : "Email, username and password are required."}</p>
           </div>
+          ${authNotice ? renderNotice(authNotice) : ""}
           ${
             isLogin
               ? `
@@ -2802,6 +3074,7 @@ function renderAuthLayout(kind) {
             <button class="btn btn-primary" type="submit">${isLogin ? "Login" : "Create account"}</button>
             <a class="btn btn-ghost" data-link href="${isLogin ? "/register" : "/login"}">${isLogin ? "Register" : "Login"}</a>
           </div>
+          ${renderOAuthButtons({ intent: "login", nextPath, title: "Or continue with" })}
           <div id="${kind}-error"></div>
         </form>
       </div>
@@ -2811,6 +3084,7 @@ function renderAuthLayout(kind) {
 }
 
 async function loginView() {
+  await ensureAuthProviders();
   return {
     html: renderAuthLayout("login"),
     onMount: () => {
@@ -2829,8 +3103,9 @@ async function loginView() {
           });
           await ensureUser(true);
           ensureRealtimeSocket();
+          const nextPath = getSearchParam("next");
           if (!maybeRedirectToProfileSetup()) {
-            navigate("/");
+            navigate(nextPath && nextPath.startsWith("/") ? nextPath : "/");
           }
         } catch (err) {
           if (err && err.handled) return;
@@ -2842,6 +3117,7 @@ async function loginView() {
 }
 
 async function registerView() {
+  await ensureAuthProviders();
   return {
     html: renderAuthLayout("register"),
     onMount: () => {
@@ -2863,12 +3139,276 @@ async function registerView() {
           });
           await ensureUser(true);
           ensureRealtimeSocket();
+          const nextPath = getSearchParam("next");
           if (!maybeRedirectToProfileSetup()) {
-            navigate("/");
+            navigate(nextPath && nextPath.startsWith("/") ? nextPath : "/");
           }
         } catch (err) {
           if (err && err.handled) return;
           document.getElementById("register-error").innerHTML = renderNotice(err.message);
+        }
+      });
+    },
+  };
+}
+
+async function accountLinkView() {
+  await ensureUser(true);
+  await ensureAuthProviders();
+
+  const flowToken = getSearchParam("flow");
+  if (!flowToken) {
+    return {
+      html: renderLayout({
+        mode: "login",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Account linking</h2><p>Link flow token is missing.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  let flow;
+  try {
+    flow = await apiFetch(`/api/auth/flows/${encodeURIComponent(flowToken)}`);
+  } catch (err) {
+    return {
+      html: renderLayout({
+        mode: "login",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Account linking</h2>${renderNotice(err && err.message ? err.message : "Failed to load link flow.")}</section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  const link = flow && flow.link;
+  if (!link) {
+    return {
+      html: renderLayout({
+        mode: "login",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Account linking</h2><p>Link flow is invalid.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  const providerLabel = getProviderLabel(link.externalIdentity && link.externalIdentity.provider);
+  const canConfirmWithPassword = Boolean(link.existingAccount && link.existingAccount.hasPassword);
+  const nextPath = String(link.nextPath || "/").trim() || "/";
+  const content = `
+    <section class="auth-grid">
+      <div class="surface auth-info">
+        <div class="auth-badge">Account Confirmation</div>
+        <h2>Existing account found</h2>
+        <p>We found a forum account with the same email. It will not be linked automatically.</p>
+        ${renderFlowUserSummaryCard("Existing forum account", link.existingAccount)}
+      </div>
+      <div class="surface auth-form-card">
+        <div class="form-stack">
+          <div class="form-intro">
+            <h2>Link ${escapeHTML(providerLabel)}</h2>
+            <p>Confirm ownership of the existing forum account, then complete the link explicitly.</p>
+          </div>
+          <div class="flow-summary-card">
+            <div class="flow-summary-head">
+              <strong>External identity</strong>
+              <span class="status-pill is-linked">${escapeHTML(providerLabel)}</span>
+            </div>
+            <div class="flow-summary-grid">
+              ${renderProfileField("Display name", link.externalIdentity && link.externalIdentity.displayName)}
+              ${renderProfileField("Email", link.externalIdentity && link.externalIdentity.email)}
+              ${renderProfileField("Provider login", link.externalIdentity && link.externalIdentity.username)}
+            </div>
+          </div>
+          ${
+            link.currentSessionMatchesExisting
+              ? `
+                <div class="notice-box">Current session already belongs to the matching account. Finish linking explicitly.</div>
+                <div class="form-actions">
+                  <button class="btn btn-primary" type="button" data-action="complete-account-link">Link ${escapeHTML(providerLabel)}</button>
+                  <a class="btn btn-ghost" data-link href="${escapeHTML(nextPath)}">Cancel</a>
+                </div>
+              `
+              : canConfirmWithPassword
+                ? `
+                  <form id="link-confirm-form" class="form-stack">
+                    <label class="field"><span>Email or username</span><input type="text" name="login" required /></label>
+                    <label class="field"><span>Password</span><input type="password" name="password" required /></label>
+                    <div class="form-actions">
+                      <button class="btn btn-primary" type="submit">Confirm and link</button>
+                      <a class="btn btn-ghost" data-link href="/login?next=${encodeURIComponent(`/account-link?flow=${flowToken}`)}">Login manually</a>
+                    </div>
+                  </form>
+                `
+                : `
+                  ${renderNotice(`This existing account has no local password. Sign in to that account using one of its linked providers, then start linking ${providerLabel} again from the profile screen.`)}
+                  <div class="provider-pill-row">${renderLinkedProviderPills(link.existingAccount && link.existingAccount.linkedAccounts)}</div>
+                  <div class="form-actions">
+                    <a class="btn btn-primary" data-link href="/login">Go to login</a>
+                    <a class="btn btn-ghost" data-link href="/">Back to feed</a>
+                  </div>
+                `
+          }
+          <div id="account-link-error"></div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  return {
+    html: renderLayout({ mode: "login", hideHeading: true, content }),
+    onMount: () => {
+      bindHeaderActions();
+
+      const errorBox = document.getElementById("account-link-error");
+      const confirmForm = document.getElementById("link-confirm-form");
+      if (confirmForm) {
+        confirmForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (errorBox) errorBox.innerHTML = "";
+          const data = new FormData(confirmForm);
+          try {
+            const result = await apiFetch(`/api/auth/flows/${encodeURIComponent(flowToken)}/confirm-local`, {
+              method: "POST",
+              body: JSON.stringify({
+                login: data.get("login"),
+                password: data.get("password"),
+              }),
+            });
+            await ensureUser(true);
+            navigate(result && result.redirectPath ? result.redirectPath : nextPath);
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to confirm link.");
+          }
+        });
+      }
+
+      const completeButton = document.querySelector("[data-action='complete-account-link']");
+      if (completeButton) {
+        completeButton.addEventListener("click", async () => {
+          if (errorBox) errorBox.innerHTML = "";
+          try {
+            const result = await apiFetch(`/api/auth/flows/${encodeURIComponent(flowToken)}/complete`, {
+              method: "POST",
+              body: JSON.stringify({}),
+            });
+            await ensureUser(true);
+            navigate(result && result.redirectPath ? result.redirectPath : nextPath);
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to complete link.");
+          }
+        });
+      }
+    },
+  };
+}
+
+async function accountMergeView() {
+  await ensureUser(true);
+  await ensureAuthProviders();
+
+  const flowToken = getSearchParam("flow");
+  if (!flowToken) {
+    return {
+      html: renderLayout({
+        mode: "profile",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Account merge</h2><p>Merge flow token is missing.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  let flow;
+  try {
+    flow = await apiFetch(`/api/auth/flows/${encodeURIComponent(flowToken)}`);
+  } catch (err) {
+    return {
+      html: renderLayout({
+        mode: "profile",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Account merge</h2>${renderNotice(err && err.message ? err.message : "Failed to load merge flow.")}</section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  const merge = flow && flow.merge;
+  if (!merge) {
+    return {
+      html: renderLayout({
+        mode: "profile",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Account merge</h2><p>Merge flow is invalid.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  const content = `
+    <section class="surface form-card flow-page-card">
+      <div class="section-row">
+        <h2>Merge accounts</h2>
+        <p>Merge is explicit and transactional. Content stays with the canonical account.</p>
+      </div>
+      ${merge.reason === "provider_conflict" ? renderNotice(`This ${getProviderLabel(merge.provider)} identity is already linked to another forum account. Review and confirm the merge explicitly.`) : ""}
+      <div class="flow-compare-grid">
+        ${renderFlowUserSummaryCard("Canonical account", merge.canonicalUser)}
+        ${renderFlowUserSummaryCard("Source account", merge.sourceUser)}
+      </div>
+      <div class="flow-summary-card">
+        <div class="flow-summary-head">
+          <strong>Final account after merge</strong>
+          <span class="status-pill is-linked">explicit confirm required</span>
+        </div>
+        <div class="flow-summary-grid">
+          ${renderProfileField("Default display name", merge.defaultDisplayName)}
+          ${renderProfileField("Final username", `@${normalizeUsername(merge.finalUsername)}`)}
+          ${renderProfileField("Final login email", merge.finalEmail)}
+        </div>
+      </div>
+      <form id="merge-complete-form" class="form-stack">
+        <label class="field">
+          <span>Display name after merge</span>
+          <input type="text" name="displayName" maxlength="64" value="${escapeHTML(merge.defaultDisplayName || "")}" placeholder="Leave as suggested or change it explicitly" />
+        </label>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit">Confirm merge</button>
+          <a class="btn btn-ghost" data-link href="${escapeHTML(getProfilePath(state.user && state.user.username))}">Cancel</a>
+        </div>
+        <div id="account-merge-error"></div>
+      </form>
+    </section>
+  `;
+
+  return {
+    html: renderLayout({ mode: "profile", hideHeading: true, content }),
+    onMount: () => {
+      bindHeaderActions();
+      const form = document.getElementById("merge-complete-form");
+      const errorBox = document.getElementById("account-merge-error");
+      if (!form) return;
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (errorBox) errorBox.innerHTML = "";
+        const data = new FormData(form);
+        try {
+          const result = await apiFetch(`/api/auth/flows/${encodeURIComponent(flowToken)}/complete`, {
+            method: "POST",
+            body: JSON.stringify({
+              displayName: data.get("displayName"),
+            }),
+          });
+          await ensureUser(true);
+          navigate(result && result.redirectPath ? result.redirectPath : "/");
+        } catch (err) {
+          if (err && err.handled) return;
+          if (errorBox) errorBox.innerHTML = renderNotice(err && err.message ? err.message : "Failed to complete merge.");
         }
       });
     },
@@ -3203,6 +3743,8 @@ const routes = [
   { path: "/", view: feedView },
   { path: "/login", view: loginView },
   { path: "/register", view: registerView },
+  { path: "/account-link", view: accountLinkView },
+  { path: "/account-merge", view: accountMergeView },
   { path: "/dm", view: dmIndexView },
   { path: "/dm/:peer", view: dmView },
   { path: "/u/:username", view: profileView },
@@ -3234,7 +3776,8 @@ function matchRoute(pathname) {
 async function router() {
   applyTheme(state.theme);
   handleTypingRouteTransition(location.pathname);
-  if (state.user && maybeRedirectToProfileSetup()) return;
+  const bypassProfileSetup = location.pathname === "/account-link" || location.pathname === "/account-merge";
+  if (state.user && !bypassProfileSetup && maybeRedirectToProfileSetup()) return;
   const match = matchRoute(location.pathname) || { route: routes[0], params: {} };
   const activePeerID = getActiveDMPeerIDFromPath(location.pathname);
   if (!activePeerID) {

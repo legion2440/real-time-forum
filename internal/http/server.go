@@ -56,8 +56,12 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/register", h.handleRegister)
 	apiMux.HandleFunc("/api/login", h.handleLogin)
 	apiMux.HandleFunc("/api/logout", h.handleLogout)
+	apiMux.HandleFunc("/api/auth/providers", h.handleOAuthProviders)
+	apiMux.HandleFunc("/api/auth/flows/", h.handleAuthFlowRoutes)
 	apiMux.HandleFunc("/api/me/profile", h.handleMyProfile)
 	apiMux.HandleFunc("/api/me", h.handleMe)
+	apiMux.HandleFunc("/api/profile/local-account/merge", h.handleLocalMerge)
+	apiMux.HandleFunc("/api/profile/linked-accounts/", h.handleLinkedAccountRoutes)
 	apiMux.HandleFunc("/api/u/", h.handlePublicProfile)
 	apiMux.HandleFunc("/api/users", h.handleUsers)
 	apiMux.HandleFunc("/api/attachments", h.handleAttachments)
@@ -75,6 +79,7 @@ func (h *Handler) Routes(webDir string) http.Handler {
 
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/api/", h.authMiddleware(apiMux))
+	rootMux.Handle("/auth/", h.authMiddleware(http.HandlerFunc(h.handleOAuthRoutes)))
 	rootMux.Handle("/ws", h.authMiddleware(http.HandlerFunc(h.handleWS)))
 	rootMux.Handle("/", spaHandler(webDir))
 
@@ -121,7 +126,7 @@ func spaHandler(webDir string) http.Handler {
 func isKnownSPARoute(reqPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimPrefix(reqPath, "/"))
 	switch cleanPath {
-	case "/", "/login", "/register", "/new", "/dm", "/u":
+	case "/", "/login", "/register", "/new", "/dm", "/u", "/account-link", "/account-merge":
 		return true
 	}
 	if strings.HasPrefix(cleanPath, "/post/") {

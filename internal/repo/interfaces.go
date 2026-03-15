@@ -10,6 +10,7 @@ import (
 type UserRepo interface {
 	Create(ctx context.Context, user *domain.User) (int64, error)
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
+	GetByEmailCI(ctx context.Context, email string) (*domain.User, error)
 	GetByUsername(ctx context.Context, username string) (*domain.User, error)
 	GetByUsernameCI(ctx context.Context, username string) (*domain.User, error)
 	GetByID(ctx context.Context, id int64) (*domain.User, error)
@@ -25,6 +26,41 @@ type SessionRepo interface {
 	GetByToken(ctx context.Context, token string) (*domain.Session, error)
 	DeleteByToken(ctx context.Context, token string) error
 	DeleteByUserID(ctx context.Context, userID int64) error
+}
+
+type AuthIdentityRepo interface {
+	Create(ctx context.Context, identity *domain.AuthIdentity) (int64, error)
+	GetByProviderUserID(ctx context.Context, provider, providerUserID string) (*domain.AuthIdentity, error)
+	GetByUserProvider(ctx context.Context, userID int64, provider string) (*domain.AuthIdentity, error)
+	ListByUserID(ctx context.Context, userID int64) ([]domain.AuthIdentity, error)
+	Update(ctx context.Context, identity *domain.AuthIdentity) error
+	DeleteByUserProvider(ctx context.Context, userID int64, provider string) error
+	CountByUserID(ctx context.Context, userID int64) (int, error)
+}
+
+type AuthFlowRepo interface {
+	Create(ctx context.Context, flow *domain.AuthFlow) error
+	GetByToken(ctx context.Context, token string) (*domain.AuthFlow, error)
+	TakeByToken(ctx context.Context, token string) (*domain.AuthFlow, error)
+	DeleteByToken(ctx context.Context, token string) error
+}
+
+type AccountMergeInput struct {
+	TargetUserID             int64
+	SourceUserID             int64
+	DisplayName              *string
+	TargetEmail              string
+	TargetUsername           string
+	TargetPassHash           string
+	TargetProfileInitialized bool
+	Identity                 *domain.AuthIdentity
+	Now                      time.Time
+}
+
+type AccountRepo interface {
+	HasDirectMessagesBetweenUsers(ctx context.Context, userA, userB int64) (bool, error)
+	CreateUserWithIdentity(ctx context.Context, user *domain.User, identity *domain.AuthIdentity) (int64, error)
+	MergeUsers(ctx context.Context, input AccountMergeInput) error
 }
 
 type PostRepo interface {

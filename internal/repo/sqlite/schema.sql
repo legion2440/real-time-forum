@@ -19,6 +19,32 @@ CREATE TABLE IF NOT EXISTS sessions (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS auth_identities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  provider_user_id TEXT NOT NULL,
+  provider_email TEXT NOT NULL DEFAULT '',
+  provider_email_verified INTEGER NOT NULL DEFAULT 0,
+  provider_display_name TEXT NOT NULL DEFAULT '',
+  provider_avatar_url TEXT NOT NULL DEFAULT '',
+  linked_at INTEGER NOT NULL,
+  last_login_at INTEGER NOT NULL,
+  UNIQUE(provider, provider_user_id),
+  UNIQUE(user_id, provider),
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS auth_flows (
+  token TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  user_id INTEGER,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS attachments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner_user_id INTEGER NOT NULL,

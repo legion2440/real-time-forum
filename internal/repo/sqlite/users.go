@@ -19,9 +19,9 @@ func NewUserRepo(db *sql.DB) *UserRepo {
 
 func (r *UserRepo) Create(ctx context.Context, user *domain.User) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `
-        INSERT INTO users (email, username, pass_hash, created_at)
-        VALUES (?, ?, ?, ?)
-    `, user.Email, user.Username, user.PassHash, timeToUnix(user.CreatedAt))
+        INSERT INTO users (email, username, display_name, pass_hash, created_at, profile_initialized)
+        VALUES (?, ?, ?, ?, ?, ?)
+    `, user.Email, user.Username, nullableTrimmedText(user.DisplayName), user.PassHash, timeToUnix(user.CreatedAt), boolToInt(user.ProfileInitialized))
 	if err != nil {
 		return 0, err
 	}
@@ -37,6 +37,18 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
         SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
         FROM users
         WHERE email = ?
+    `, email)
+
+	return scanUser(row)
+}
+
+func (r *UserRepo) GetByEmailCI(ctx context.Context, email string) (*domain.User, error) {
+	row := r.db.QueryRowContext(ctx, `
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        FROM users
+        WHERE email = ? COLLATE NOCASE
+        ORDER BY id ASC
+        LIMIT 1
     `, email)
 
 	return scanUser(row)
@@ -231,4 +243,12 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func nullableTrimmedText(value string) any {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
 }

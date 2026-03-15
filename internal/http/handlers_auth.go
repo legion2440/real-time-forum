@@ -97,10 +97,10 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.auth.GetUserByID(r.Context(), userID)
+	account, err := h.auth.GetMyAccount(r.Context(), userID)
 	if handleServiceError(w, err) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newMeResponse(*user))
+	writeJSON(w, http.StatusOK, newMeResponse(*account.User, account.HasPassword, account.LinkedAccounts))
 }

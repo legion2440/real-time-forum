@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/mail"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -41,13 +42,14 @@ type AuthService struct {
 	idGen      id.Generator
 	hasher     PasswordHasher
 	sessionTTL time.Duration
+	oauth      *oauthDependencies
 }
 
 const maxDisplayNameLength = 64
 const maxProfileAge = 150
 
-func NewAuthService(users repo.UserRepo, sessions repo.SessionRepo, clock clock.Clock, idGen id.Generator, ttl time.Duration) *AuthService {
-	return &AuthService{
+func NewAuthService(users repo.UserRepo, sessions repo.SessionRepo, clock clock.Clock, idGen id.Generator, ttl time.Duration, opts ...AuthOption) *AuthService {
+	service := &AuthService{
 		users:      users,
 		sessions:   sessions,
 		clock:      clock,
@@ -55,6 +57,12 @@ func NewAuthService(users repo.UserRepo, sessions repo.SessionRepo, clock clock.
 		hasher:     bcryptHasher{},
 		sessionTTL: ttl,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service
 }
 
 func (s *AuthService) Register(ctx context.Context, email, username, password string) (*domain.User, error) {
@@ -63,8 +71,11 @@ func (s *AuthService) Register(ctx context.Context, email, username, password st
 	if email == "" || username == "" || strings.TrimSpace(password) == "" {
 		return nil, ErrInvalidInput
 	}
+	if !isValidEmail(email) {
+		return nil, ErrInvalidInput
+	}
 
-	if _, err := s.users.GetByEmail(ctx, email); err == nil {
+	if _, err := s.users.GetByEmailCI(ctx, email); err == nil {
 		return nil, errors.Join(ErrConflict, ErrEmailTaken)
 	} else if err != nil && !errors.Is(err, repo.ErrNotFound) {
 		return nil, err
@@ -107,27 +118,16 @@ func (s *AuthService) Login(ctx context.Context, email, username, password strin
 	if err != nil {
 		return nil, nil, err
 	}
+	if strings.TrimSpace(user.PassHash) == "" {
+		return nil, nil, ErrUnauthorized
+	}
 
 	if err := s.hasher.Compare(user.PassHash, password); err != nil {
 		return nil, nil, ErrUnauthorized
 	}
 
-	if err := s.sessions.DeleteByUserID(ctx, user.ID); err != nil {
-		return nil, nil, err
-	}
-
-	token, err := s.idGen.New()
+	session, err := s.createSessionForUser(ctx, user.ID)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	session := &domain.Session{
-		Token:     token,
-		UserID:    user.ID,
-		ExpiresAt: s.clock.Now().Add(s.sessionTTL),
-	}
-
-	if err := s.sessions.Create(ctx, session); err != nil {
 		return nil, nil, err
 	}
 
@@ -280,7 +280,7 @@ func (s *AuthService) findLoginUser(ctx context.Context, email, username string)
 
 	switch {
 	case email != "" && username != "":
-		attempts = append(attempts, s.users.GetByEmail, s.users.GetByUsername)
+		attempts = append(attempts, s.users.GetByEmailCI, s.users.GetByUsername)
 		values = append(values, email, username)
 	default:
 		identifier := email
@@ -288,9 +288,9 @@ func (s *AuthService) findLoginUser(ctx context.Context, email, username string)
 			identifier = username
 		}
 		if strings.Contains(identifier, "@") {
-			attempts = append(attempts, s.users.GetByEmail, s.users.GetByUsername)
+			attempts = append(attempts, s.users.GetByEmailCI, s.users.GetByUsername)
 		} else {
-			attempts = append(attempts, s.users.GetByUsername, s.users.GetByEmail)
+			attempts = append(attempts, s.users.GetByUsername, s.users.GetByEmailCI)
 		}
 		values = append(values, identifier, identifier)
 	}
@@ -329,6 +329,28 @@ func (s *AuthService) isDisplayNameTaken(ctx context.Context, displayName string
 	return false, nil
 }
 
+func (s *AuthService) createSessionForUser(ctx context.Context, userID int64) (*domain.Session, error) {
+	if err := s.sessions.DeleteByUserID(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	token, err := s.idGen.New()
+	if err != nil {
+		return nil, err
+	}
+
+	session := &domain.Session{
+		Token:     token,
+		UserID:    userID,
+		ExpiresAt: s.clock.Now().Add(s.sessionTTL),
+	}
+	if err := s.sessions.Create(ctx, session); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
 func normalizeProfileDisplayName(displayName, username string) *string {
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" || strings.EqualFold(displayName, strings.TrimSpace(username)) {
@@ -347,4 +369,12 @@ func normalizeStoredDisplayName(displayName string) *string {
 
 func normalizeUsername(username string) string {
 	return strings.TrimPrefix(strings.TrimSpace(username), "@")
+}
+
+func isValidEmail(email string) bool {
+	addr, err := mail.ParseAddress(strings.TrimSpace(email))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(addr.Address), strings.TrimSpace(email))
 }

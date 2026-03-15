@@ -22,6 +22,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorResponse{Error: msg})
 }
 
+func writeErrorMessage(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, errorResponse{
+		Error:   code,
+		Message: message,
+	})
+}
+
 const sessionEndedMessage = "Session ended (expired, logged out, or logged in elsewhere). Please sign in again."
 
 func writeSessionEndedUnauthorized(w http.ResponseWriter) {

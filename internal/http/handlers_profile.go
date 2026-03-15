@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"forum/internal/domain"
+	"forum/internal/service"
 )
 
 type publicProfileResponse struct {
@@ -21,16 +22,18 @@ type publicProfileResponse struct {
 }
 
 type meResponse struct {
-	ID                int64     `json:"id"`
-	Email             string    `json:"email"`
-	Username          string    `json:"username"`
-	DisplayName       string    `json:"displayName"`
-	FirstName         string    `json:"firstName"`
-	LastName          string    `json:"lastName"`
-	Age               int       `json:"age"`
-	Gender            string    `json:"gender"`
-	NeedsProfileSetup bool      `json:"needsProfileSetup"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID                int64                         `json:"id"`
+	Email             string                        `json:"email"`
+	Username          string                        `json:"username"`
+	DisplayName       string                        `json:"displayName"`
+	FirstName         string                        `json:"firstName"`
+	LastName          string                        `json:"lastName"`
+	Age               int                           `json:"age"`
+	Gender            string                        `json:"gender"`
+	NeedsProfileSetup bool                          `json:"needsProfileSetup"`
+	CreatedAt         time.Time                     `json:"created_at"`
+	HasPassword       bool                          `json:"hasPassword"`
+	LinkedAccounts    []service.LinkedAccountStatus `json:"linkedAccounts,omitempty"`
 }
 
 type updateProfileRequest struct {
@@ -91,7 +94,7 @@ func (h *Handler) handleMyProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, newMeResponse(*user))
+	writeJSON(w, http.StatusOK, newMeResponse(*user, strings.TrimSpace(user.PassHash) != "", nil))
 }
 
 func newPublicProfileResponse(user domain.User) publicProfileResponse {
@@ -106,7 +109,7 @@ func newPublicProfileResponse(user domain.User) publicProfileResponse {
 	}
 }
 
-func newMeResponse(user domain.User) meResponse {
+func newMeResponse(user domain.User, hasPassword bool, linkedAccounts []service.LinkedAccountStatus) meResponse {
 	return meResponse{
 		ID:                user.ID,
 		Email:             user.Email,
@@ -118,6 +121,8 @@ func newMeResponse(user domain.User) meResponse {
 		Gender:            strings.TrimSpace(user.Gender),
 		NeedsProfileSetup: !user.ProfileInitialized,
 		CreatedAt:         user.CreatedAt,
+		HasPassword:       hasPassword,
+		LinkedAccounts:    linkedAccounts,
 	}
 }
 

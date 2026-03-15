@@ -63,6 +63,32 @@ func TestAuthService_RegisterConflict(t *testing.T) {
 	}
 }
 
+func TestAuthService_RegisterInvalidInput(t *testing.T) {
+	svc, cleanup := newAuthService(t)
+	defer cleanup()
+
+	testCases := []struct {
+		name     string
+		email    string
+		username string
+		password string
+	}{
+		{name: "empty email", email: "", username: "user", password: "pass"},
+		{name: "empty username", email: "user@example.com", username: "", password: "pass"},
+		{name: "empty password", email: "user@example.com", username: "user", password: ""},
+		{name: "invalid email", email: "not-an-email", username: "user", password: "pass"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.Register(context.Background(), tc.email, tc.username, tc.password)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected invalid input, got %v", err)
+			}
+		})
+	}
+}
+
 func TestAuthService_LoginInvalidatesSession(t *testing.T) {
 	svc, cleanup := newAuthService(t)
 	defer cleanup()

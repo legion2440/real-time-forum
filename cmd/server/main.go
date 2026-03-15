@@ -7,6 +7,7 @@ import (
 	"time"
 
 	httpserver "forum/internal/http"
+	"forum/internal/oauth"
 	"forum/internal/platform/clock"
 	"forum/internal/platform/id"
 	"forum/internal/repo/sqlite"
@@ -27,6 +28,9 @@ func main() {
 
 	userRepo := sqlite.NewUserRepo(db)
 	sessionRepo := sqlite.NewSessionRepo(db)
+	authIdentityRepo := sqlite.NewAuthIdentityRepo(db)
+	authFlowRepo := sqlite.NewAuthFlowRepo(db)
+	accountRepo := sqlite.NewAccountRepo(db)
 	postRepo := sqlite.NewPostRepo(db)
 	commentRepo := sqlite.NewCommentRepo(db)
 	categoryRepo := sqlite.NewCategoryRepo(db)
@@ -39,7 +43,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("attachments init: %v", err)
 	}
-	authService := service.NewAuthService(userRepo, sessionRepo, clock, id.UUIDGenerator{}, 24*time.Hour)
+	authService := service.NewAuthService(
+		userRepo,
+		sessionRepo,
+		clock,
+		id.UUIDGenerator{},
+		24*time.Hour,
+		service.WithOAuth(service.OAuthDependencies{
+			Providers:  loadOAuthRegistry(),
+			Identities: authIdentityRepo,
+			Flows:      authFlowRepo,
+			Accounts:   accountRepo,
+		}),
+	)
 	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, attachmentService, clock)
 	privateMessageService := service.NewPrivateMessageService(userRepo, privateMessageRepo, attachmentService, clock)
 
@@ -54,4 +70,34 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func loadOAuthRegistry() *oauth.Registry {
+	providers := make([]oauth.Provider, 0, 3)
+
+	if provider, err := oauth.NewGoogleProvider(oauth.ProviderConfig{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+	}); err == nil {
+		providers = append(providers, provider)
+	}
+
+	if provider, err := oauth.NewGitHubProvider(oauth.ProviderConfig{
+		ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+		ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("GITHUB_REDIRECT_URL"),
+	}); err == nil {
+		providers = append(providers, provider)
+	}
+
+	if provider, err := oauth.NewFacebookProvider(oauth.ProviderConfig{
+		ClientID:     os.Getenv("FACEBOOK_CLIENT_ID"),
+		ClientSecret: os.Getenv("FACEBOOK_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("FACEBOOK_REDIRECT_URL"),
+	}); err == nil {
+		providers = append(providers, provider)
+	}
+
+	return oauth.NewRegistry(providers...)
 }
