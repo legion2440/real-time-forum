@@ -5,9 +5,32 @@
 
 Важно: в go.mod модуль называется `forum` (исторически).
 
+## Оглавление (TOC)
+- [forum (аутентификация)](#forum-аутентификация)
+- [Что реализовано по заданию](#что-реализовано-по-заданию)
+- [Регистрация и вход](#регистрация-и-вход)
+- [Способы аутентификации](#способы-аутентификации)
+- [Привязка аккаунтов и поведение при объединении](#привязка-аккаунтов-и-поведение-при-объединении)
+- [Posts and Comments](#posts-and-comments)
+- [Private Messages (DM) + real-time](#private-messages-dm--real-time)
+- [Bonus (сверх задания)](#bonus-сверх-задания)
+- [Разрешённые пакеты](#разрешённые-пакеты)
+- [Быстрый старт](#быстрый-старт)
+- [Запуск локально](#запуск-локально)
+- [Переменные окружения](#переменные-окружения)
+- [Локальная настройка OAuth](#локальная-настройка-oauth)
+- [Docker](#docker)
+- [Тестирование](#тестирование)
+- [База данных (SQLite)](#база-данных-sqlite)
+- [Статусы и ошибки (HTTP)](#статусы-и-ошибки-http)
+- [Отладка: проверка HTTP 500 (только для dev)](#отладка-проверка-http-500-только-для-dev)
+- [Структура проекта](#структура-проекта)
+- [Авторы](#авторы)
+
+
 ## Что реализовано по заданию
 
-### Registration and Login
+### Регистрация и вход
 - Регистрация и логин обязательны для работы с форумом.
 - Логин: 1 поле "e-mail or username" + password (можно войти по нику или e-mail).
 - Logout доступен с любой страницы.
@@ -16,38 +39,44 @@
 - Поля профиля (first name / last name / age / gender) сделаны необязательными на первичной регистрации.
   После первого логина пользователь попадает на страницу профиля (profile setup) и может заполнить их там.
 
-### Authentication Methods
+### Способы аутентификации
 - `local`: email or username + password
 - `google`: OAuth 2.0 Authorization Code Flow
 - `github`: OAuth 2.0 Authorization Code Flow
 - `facebook`: OAuth 2.0 Authorization Code Flow
 
-OAuth is implemented through a provider registry (`internal/oauth`) and generic handlers:
+OAuth реализован через реестр провайдеров (`internal/oauth`) и универсальные обработчики:
 - `GET /auth/{provider}/login`
 - `GET /auth/{provider}/callback`
 
-The architecture is intentionally extensible: adding a new provider such as Steam, Twitch, or My.Games only requires a new provider adapter that implements the shared interface and registration in the provider registry.
+Архитектура специально сделана расширяемой: чтобы добавить нового провайдера, например Steam, Twitch или My.Games, достаточно реализовать новый адаптер провайдера с общим интерфейсом и зарегистрировать его в реестре провайдеров.
 
-### Linked Accounts And Merge Behavior
-- Local login/register remains active and is not replaced by OAuth.
-- Profile page includes `Linked accounts` with provider status: `linked` / `not linked`.
-- A logged-in user can explicitly link a provider from profile.
-- Unlink is blocked if it would leave the account without any valid sign-in method.
-- Matching email from OAuth does not auto-link or auto-merge a logged-out user.
-- If OAuth returns an email already used by an existing forum account, the app creates an explicit confirmation flow.
-- If two existing accounts need to be combined, the app creates an explicit merge flow.
-- Canonical account is selected by `created_at` (older account wins by default).
-- Default display name during merge also comes from the older account and must be confirmed explicitly.
-- Merge is transactional and moves linked identities plus current user-owned forum data to the canonical account.
-- If merge would be unsafe for a known edge case, it is rejected explicitly instead of partially continuing.
+Примечание по Facebook:
+- Коннектор Facebook реализован в коде и предусмотрен архитектурой проекта.
+- Для локальной ручной проверки Facebook Login Meta может требовать HTTPS callback / более строгую настройку redirect URI.
+- Поэтому в локальном режиме основная проверка аутентификации выполняется через `local`, `google` и `github`, а Facebook оставлен как подготовленный и расширяемый провайдер.
 
-### Posts and Comments
+### Привязка аккаунтов и поведение при объединении
+- Локальная регистрация и вход остаются активными и не заменяются OAuth.
+- На странице профиля есть блок `Linked accounts` со статусом провайдеров: `linked` / `not linked`.
+- Авторизованный пользователь может явно привязать провайдера из профиля.
+- Отвязка блокируется, если после неё у аккаунта не останется ни одного корректного способа входа.
+- Совпадение e-mail из OAuth не приводит к автоматической привязке или автоматическому объединению для неавторизованного пользователя.
+- Если OAuth возвращает e-mail, который уже используется существующим аккаунтом форума, приложение запускает явный сценарий подтверждения.
+- Если нужно объединить два существующих аккаунта, приложение запускает явный сценарий merge.
+- Канонический аккаунт выбирается по `created_at` (по умолчанию побеждает более старый аккаунт).
+- Display name по умолчанию при merge тоже берётся от более старого аккаунта и должен быть подтверждён явно.
+- Merge выполняется транзакционно и переносит связанные identity, а также текущие пользовательские данные форума в канонический аккаунт.
+- Если merge небезопасен для известного edge case, операция явно отклоняется, а не продолжается частично.
+
+
+### Посты и комменты
 - Посты с категориями.
 - Комментарии к постам.
 - Лента постов, комментарии видны после открытия поста.
 - Typing in progress для комментариев: пользователи, открывшие один и тот же пост, видят в real time, что кто-то печатает комментарий.
 
-### Private Messages (DM) + real-time
+### Личные сообщения (DM) + работа в реальном времени
 - Список пользователей для чата: online/offline, видим всегда.
 - Сортировка как в Discord: по последнему сообщению, если сообщений нет - по алфавиту.
 - История сообщений:
@@ -57,14 +86,14 @@ The architecture is intentionally extensible: adding a new provider such as Stea
 - Real-time доставка сообщений через WebSocket без refresh.
 - Typing in progress для DM: собеседник видит в real time, что пользователь печатает сообщение.
 
-## Bonus (сверх задания)
+## Бонусы (сверх задания)
 - Профили пользователей (display name + необязательные поля first/last/age/gender).
 - Unread для DM: серверный "true" + локальный cache (localStorage) как быстрый fallback.
 - Загрузка изображений (JPEG/PNG/GIF, до 20MB) для постов и личных сообщений.
 - Кастомная 404 страница.
 - Реакции like/dislike на посты и комментарии.
 
-## Allowed packages
+## Разрешённые пакеты
 - Только стандартные пакеты Go +:
   - github.com/gorilla/websocket
   - github.com/mattn/go-sqlite3
@@ -112,19 +141,21 @@ go run ./cmd/server
 export FORUM_DB_PATH=./forum.db
 ```
 
-OAuth providers are optional. If provider env vars are missing, local auth still works and the missing provider is simply not exposed in the UI.
 
-### Local OAuth Setup
-1. Create OAuth apps in Google, GitHub, and/or Facebook developer consoles.
-2. Configure each provider callback URL to point to this app:
+### Локальная настройка OAuth
+1. Создайте OAuth-приложения в кабинетах разработчика Google, GitHub и при необходимости Facebook.
+2. Настройте callback URL каждого провайдера на это приложение:
    - Google: `http://127.0.0.1:8080/auth/google/callback`
    - GitHub: `http://127.0.0.1:8080/auth/github/callback`
    - Facebook: `http://127.0.0.1:8080/auth/facebook/callback`
-3. Export matching env vars before `go run ./cmd/server`.
-4. Start the server and use `Login` / `Register` page buttons:
+3. Перед `go run ./cmd/server` экспортируйте соответствующие env-переменные.
+4. Запустите сервер и используйте кнопки на страницах `Login` / `Register`:
    - `Continue with Google`
    - `Continue with GitHub`
    - `Continue with Facebook`
+
+Примечание:
+- OAuth-провайдеры необязательны. Если env-переменные провайдера не заданы, локальная аутентификация продолжает работать, а отсутствующий провайдер просто не показывается в UI.
 
 Example:
 ```bash
@@ -225,6 +256,7 @@ real-time-forum/
 ├─ internal/                   # приватный код приложения
 │  ├─ domain/                  # доменные сущности/типы
 │  ├─ http/                    # HTTP-слой: router, handlers, middleware, cookies, responses/errors
+│  ├─ oauth/                   # OAuth providers, registry, normalized external identity
 │  ├─ platform/                # утилиты: id/uuid, clock/time
 │  ├─ realtime/ws/             # WS hub + события presence/pm/typing, подписки на post view
 │  ├─ repo/                    # слой доступа к данным (интерфейсы + реализации)
@@ -246,28 +278,9 @@ real-time-forum/
 └─ README.md
 ```
 
-## Оглавление (TOC)
-- [real-time-forum](#real-time-forum)
-- [Что реализовано по заданию](#что-реализовано-по-заданию)
-  - [Registration and Login](#registration-and-login)
-  - [Posts and Comments](#posts-and-comments)
-  - [Private Messages (DM) + real-time](#private-messages-dm--real-time)
-- [Bonus (сверх задания)](#bonus-сверх-задания)
-- [Allowed packages](#allowed-packages)
-- [Быстрый старт](#быстрый-старт)
-  - [Запуск локально](#запуск-локально)
-  - [Переменные окружения](#переменные-окружения)
-  - [Docker](#docker)
-- [Тестирование](#тестирование)
-- [База данных (SQLite)](#база-данных-sqlite)
-- [Статусы и ошибки (HTTP)](#статусы-и-ошибки-http)
-- [Debug: проверить HTTP 500 (dev-only)](#debug-проверить-http-500-dev-only)
-- [Структура проекта](#структура-проекта)
-- [Оглавление (TOC)](#оглавление-toc)
-
 ## Авторы
 - Nazar Yestayev (@nyestaye / @legion2440)
+- Akhmad Zhagiparov (@azhagipa)
 - Dastan Gabbassov (@dgabbass)
 - Nurgul Ilyassova (@nilyasso)
-- Davyd Semenov (@mmujajov)
 - Yernazar Uxumbayev (@yuxumbay)
