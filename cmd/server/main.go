@@ -10,6 +10,7 @@ import (
 	"forum/internal/oauth"
 	"forum/internal/platform/clock"
 	"forum/internal/platform/id"
+	realtimews "forum/internal/realtime/ws"
 	"forum/internal/repo/sqlite"
 	"forum/internal/service"
 )
@@ -37,8 +38,12 @@ func main() {
 	reactionRepo := sqlite.NewReactionRepo(db)
 	privateMessageRepo := sqlite.NewPrivateMessageRepo(db)
 	attachmentRepo := sqlite.NewAttachmentRepo(db)
+	centerRepo := sqlite.NewCenterRepo(db)
 
 	clock := clock.RealClock{}
+	hub := realtimews.NewHub()
+	go hub.Run()
+	notificationPublisher := realtimews.NewNotificationPublisher(hub)
 	attachmentService, err := service.NewAttachmentService(attachmentRepo, clock, id.UUIDGenerator{}, "var/uploads")
 	if err != nil {
 		log.Fatalf("attachments init: %v", err)
@@ -56,10 +61,11 @@ func main() {
 			Accounts:   accountRepo,
 		}),
 	)
-	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, attachmentService, clock)
-	privateMessageService := service.NewPrivateMessageService(userRepo, privateMessageRepo, attachmentService, clock)
+	centerService := service.NewCenterService(centerRepo, userRepo, postRepo, commentRepo, clock, notificationPublisher)
+	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, attachmentService, clock, centerService)
+	privateMessageService := service.NewPrivateMessageService(userRepo, privateMessageRepo, attachmentService, clock, centerService)
 
-	handler := httpserver.NewHandler(authService, postService, privateMessageService, attachmentService)
+	handler := httpserver.NewHandler(authService, postService, privateMessageService, centerService, attachmentService, hub)
 
 	srv := &http.Server{
 		Addr:    ":8080",

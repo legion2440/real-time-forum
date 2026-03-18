@@ -15,15 +15,22 @@ type PrivateMessageService struct {
 	messages    repo.PrivateMessageRepo
 	attachments *AttachmentService
 	clock       clock.Clock
+	center      *CenterService
 }
 
-func NewPrivateMessageService(users repo.UserRepo, messages repo.PrivateMessageRepo, attachments *AttachmentService, clock clock.Clock) *PrivateMessageService {
-	return &PrivateMessageService{
+func NewPrivateMessageService(users repo.UserRepo, messages repo.PrivateMessageRepo, attachments *AttachmentService, clock clock.Clock, deps ...any) *PrivateMessageService {
+	service := &PrivateMessageService{
 		users:       users,
 		messages:    messages,
 		attachments: attachments,
 		clock:       clock,
 	}
+	for _, dependency := range deps {
+		if center, ok := dependency.(*CenterService); ok && center != nil {
+			service.center = center
+		}
+	}
+	return service
 }
 
 func (s *PrivateMessageService) Send(ctx context.Context, fromID, toID int64, body string, attachmentID *int64) (*domain.PrivateMessage, error) {
@@ -57,7 +64,16 @@ func (s *PrivateMessageService) Send(ctx context.Context, fromID, toID int64, bo
 		return nil, err
 	}
 
-	return s.messages.SavePrivateMessage(ctx, fromID, toID, body, attachment, s.clock.Now())
+	message, err := s.messages.SavePrivateMessage(ctx, fromID, toID, body, attachment, s.clock.Now())
+	if err != nil {
+		return nil, err
+	}
+	if s.center != nil {
+		if err := s.center.HandlePrivateMessage(ctx, message); err != nil {
+			return nil, err
+		}
+	}
+	return message, nil
 }
 
 func (s *PrivateMessageService) ListConversationLast(ctx context.Context, userA, userB int64, limit int) ([]domain.PrivateMessage, error) {

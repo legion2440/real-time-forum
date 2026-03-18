@@ -23,6 +23,12 @@ type createCommentRequest struct {
 	ParentID *int64 `json:"parent_id,omitempty"`
 }
 
+type postDetailResponse struct {
+	domain.Post
+	IsSubscribed      bool `json:"isSubscribed"`
+	IsFollowingAuthor bool `json:"isFollowingAuthor"`
+}
+
 type reactRequest struct {
 	Value int `json:"value"`
 }
@@ -130,15 +136,17 @@ func (h *Handler) handlePostsSubroutes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid input")
 			return
 		}
-		if r.Method != http.MethodGet {
+
+		switch r.Method {
+		case http.MethodGet:
+			h.handleGetPost(w, r, id)
+		case http.MethodPut:
+			h.handleUpdatePost(w, r, id)
+		case http.MethodDelete:
+			h.handleDeletePost(w, r, id)
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
 		}
-		post, err := h.posts.GetPost(r.Context(), id)
-		if handleServiceError(w, err) {
-			return
-		}
-		writeJSON(w, http.StatusOK, post)
 		return
 	}
 
@@ -165,6 +173,15 @@ func (h *Handler) handlePostsSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			h.handlePostReaction(w, r, id)
+		case "subscription":
+			switch r.Method {
+			case http.MethodPost:
+				h.handleSubscribePost(w, r, id)
+			case http.MethodDelete:
+				h.handleUnsubscribePost(w, r, id)
+			default:
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
 		default:
 			writeError(w, http.StatusNotFound, "not found")
 		}
@@ -199,6 +216,23 @@ func (h *Handler) handleCreateComment(w http.ResponseWriter, r *http.Request, po
 	writeJSON(w, http.StatusCreated, comment)
 }
 
+func (h *Handler) handleGetPost(w http.ResponseWriter, r *http.Request, postID int64) {
+	post, err := h.posts.GetPost(r.Context(), postID)
+	if handleServiceError(w, err) {
+		return
+	}
+
+	response := postDetailResponse{Post: *post}
+	if h.center != nil {
+		if userID, ok := userIDFromContext(r.Context()); ok {
+			response.IsSubscribed, _ = h.center.IsPostSubscribed(r.Context(), userID, post.ID)
+			response.IsFollowingAuthor, _ = h.center.IsFollowingUser(r.Context(), userID, post.UserID)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (h *Handler) handleListComments(w http.ResponseWriter, r *http.Request, postID int64) {
 	q, err := parseSearchQuery(r.URL.Query().Get("q"))
 	if handleServiceError(w, err) {
@@ -229,11 +263,78 @@ func (h *Handler) handlePostReaction(w http.ResponseWriter, r *http.Request, pos
 		return
 	}
 
-	if err := h.posts.ReactPost(r.Context(), userID, postID, req.Value); handleServiceError(w, err) {
+	if _, err := h.posts.ReactPost(r.Context(), userID, postID, req.Value); handleServiceError(w, err) {
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleUpdatePost(w http.ResponseWriter, r *http.Request, postID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+
+	var req createPostRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid input")
+		return
+	}
+
+	post, err := h.posts.UpdatePost(r.Context(), userID, postID, req.Title, req.Body, req.Categories)
+	if handleServiceError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, post)
+}
+
+func (h *Handler) handleDeletePost(w http.ResponseWriter, r *http.Request, postID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+
+	if err := h.posts.DeletePost(r.Context(), userID, postID); handleServiceError(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) handleSubscribePost(w http.ResponseWriter, r *http.Request, postID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+	if h.center == nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := h.center.SubscribePost(r.Context(), userID, postID); handleServiceError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleUnsubscribePost(w http.ResponseWriter, r *http.Request, postID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+	if h.center == nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := h.center.UnsubscribePost(r.Context(), userID, postID); handleServiceError(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handleCommentsSubroutes(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +346,23 @@ func (h *Handler) handleCommentsSubroutes(w http.ResponseWriter, r *http.Request
 
 	rest := strings.TrimPrefix(r.URL.Path, prefix)
 	parts := strings.Split(rest, "/")
+	if len(parts) == 1 {
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid input")
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			h.handleUpdateComment(w, r, id)
+		case http.MethodDelete:
+			h.handleDeleteComment(w, r, id)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
 	if len(parts) != 2 || parts[1] != "react" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -277,11 +395,44 @@ func (h *Handler) handleCommentReaction(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if err := h.posts.ReactComment(r.Context(), userID, commentID, req.Value); handleServiceError(w, err) {
+	if _, err := h.posts.ReactComment(r.Context(), userID, commentID, req.Value); handleServiceError(w, err) {
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleUpdateComment(w http.ResponseWriter, r *http.Request, commentID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+
+	var req createCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid input")
+		return
+	}
+
+	comment, err := h.posts.UpdateComment(r.Context(), userID, commentID, req.Body)
+	if handleServiceError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, comment)
+}
+
+func (h *Handler) handleDeleteComment(w http.ResponseWriter, r *http.Request, commentID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+
+	if err := h.posts.DeleteComment(r.Context(), userID, commentID); handleServiceError(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func parseBoolQuery(val string) bool {

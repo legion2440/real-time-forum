@@ -16,6 +16,7 @@ const TYPING_SCOPE_DM = "dm";
 const TYPING_SCOPE_POST = "post";
 const TYPING_STATUS_START = "start";
 const TYPING_STATUS_STOP = "stop";
+const CENTER_NOTIFICATION_BUCKETS = ["dm", "my_content", "subscriptions"];
 
 const state = {
   user: null,
@@ -49,6 +50,9 @@ const state = {
   authSessionNoticeOpen: false,
   authProviders: [],
   authProvidersLoaded: false,
+  editingCommentID: "",
+  editingCommentDraft: "",
+  center: createEmptyCenterState(),
   theme: getInitialTheme(),
 };
 
@@ -65,6 +69,40 @@ const typingRuntime = {
 let realtimeSocket = null;
 
 applyTheme(state.theme);
+
+function createEmptyCenterState() {
+  return {
+    summaryLoaded: false,
+    summary: {
+      total: 0,
+      dm: 0,
+      myContent: 0,
+      subscriptions: 0,
+    },
+    activityLoaded: false,
+    activity: {
+      posts: [],
+      postsHasMore: false,
+      reactions: [],
+      reactionsHasMore: false,
+      comments: [],
+      commentsHasMore: false,
+    },
+    notifications: CENTER_NOTIFICATION_BUCKETS.reduce((acc, bucket) => {
+      acc[bucket] = {
+        loaded: false,
+        loading: false,
+        items: [],
+        hasMore: false,
+      };
+      return acc;
+    }, {}),
+  };
+}
+
+function resetCenterState() {
+  state.center = createEmptyCenterState();
+}
 
 function debugWS(...args) {
   if (DEBUG_WS) console.log(...args);
@@ -232,8 +270,45 @@ function setDMPeerUnreadCount(peerID, unreadCount) {
   syncDMUnreadCache(nextUnreadByPeer);
 }
 
+function normalizeNotificationSummary(value) {
+  if (!value || typeof value !== "object") {
+    return { total: 0, dm: 0, myContent: 0, subscriptions: 0 };
+  }
+  const total = Math.max(0, Math.trunc(Number(value.total ?? value.Total ?? 0) || 0));
+  const dm = Math.max(0, Math.trunc(Number(value.dm ?? value.DM ?? 0) || 0));
+  const myContent = Math.max(0, Math.trunc(Number(value.myContent ?? value.my_content ?? value.MyContent ?? 0) || 0));
+  const subscriptions = Math.max(0, Math.trunc(Number(value.subscriptions ?? value.Subscriptions ?? 0) || 0));
+  return {
+    total,
+    dm,
+    myContent,
+    subscriptions,
+  };
+}
+
+function setNotificationSummary(summary) {
+  state.center.summary = normalizeNotificationSummary(summary);
+  state.center.summaryLoaded = true;
+  syncNotificationButton();
+}
+
+function getNotificationBucketUnreadCount(bucket) {
+  const summary = state.center && state.center.summary ? state.center.summary : normalizeNotificationSummary();
+  switch (String(bucket || "").trim()) {
+    case "dm":
+      return Number(summary.dm || 0);
+    case "my_content":
+      return Number(summary.myContent || 0);
+    case "subscriptions":
+      return Number(summary.subscriptions || 0);
+    default:
+      return 0;
+  }
+}
+
 function getTotalUnreadCount() {
-  return Object.values(state.dmUnreadByPeer || {}).reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+  const summary = state.center && state.center.summary ? state.center.summary : null;
+  return summary ? Math.max(0, Number(summary.total || 0)) : 0;
 }
 
 function getNotificationsLabel(totalUnread = getTotalUnreadCount()) {
@@ -967,6 +1042,9 @@ function clearAuthenticatedState() {
   state.filters.liked = false;
   state.postDraftAttachment = null;
   state.postAttachmentUploading = false;
+  state.editingCommentID = "";
+  state.editingCommentDraft = "";
+  resetCenterState();
   clearDMState();
   clearPresenceState();
   closeRealtimeSocket();
@@ -1431,6 +1509,7 @@ function renderSidebar(mode) {
       <div class="sidebar-block">
         <div class="sidebar-title">Navigation</div>
         <a class="side-link ${mode === "feed" && !state.filters.mine && !state.filters.liked ? "is-active" : ""}" data-link data-action="open-home-feed" href="/">${icon("home")}<span>Home</span></a>
+        <a class="side-link ${mode === "center" ? "is-active" : ""}" data-link href="/center">${icon("bell")}<span>Center</span></a>
         <a class="side-link ${mode === "feed" && state.filters.mine ? "is-active" : ""}" data-link data-action="open-created-posts" href="/">${icon("createdPosts")}<span>Created Posts</span></a>
         <a class="side-link ${mode === "feed" && state.filters.liked ? "is-active" : ""}" data-link data-action="open-liked-posts" href="/">${icon("like")}<span>Liked Posts</span></a>
       </div>
@@ -1965,12 +2044,25 @@ function renderEmpty(title, text, href, cta) {
   `;
 }
 
+function isCurrentUserOwner(entity) {
+  const ownerID = normalizeUserID(entity && (entity.user_id ?? entity.userId));
+  return Boolean(ownerID) && ownerID === getCurrentUserID();
+}
+
+function canEditComment(comment) {
+  if (!isCurrentUserOwner(comment)) return false;
+  const createdAt = Date.parse(comment && (comment.created_at || comment.createdAt || ""));
+  if (!Number.isFinite(createdAt)) return false;
+  return Date.now() - createdAt <= 30 * 60 * 1000;
+}
+
 function renderPostCard(post) {
   const authorUsername = getAuthorUsername(post);
   const author = getAuthorDisplay(post);
   const categoriesMarkup = categoryTags(post.categories);
   const viewsCount = post.views_count ?? post.views ?? 0;
   const attachmentMarkup = renderImageAttachment(post && post.attachment, "post-card-image", post && post.title ? `${post.title} attachment` : "Post attachment");
+  const isOwner = isCurrentUserOwner(post);
   return `
     <article class="surface post-card">
       <div class="post-card-main">
@@ -1998,6 +2090,8 @@ function renderPostCard(post) {
           <button class="action-pill" type="button" data-action="like" aria-label="Like">${icon("like")} ${post.likes || 0}</button>
           <button class="action-pill" type="button" data-action="dislike" aria-label="Dislike">${icon("dislike")} ${post.dislikes || 0}</button>
           <a class="action-pill" data-link href="/post/${post.id}" aria-label="Comments">${icon("comment")} ${post.comments_count ?? (Array.isArray(post.comments) ? post.comments.length : 0)}</a>
+          ${isOwner ? `<a class="action-pill" data-link href="/post/${post.id}?edit=1">Edit</a>` : ""}
+          ${isOwner ? `<button class="action-pill" type="button" data-action="delete-post" data-post-id="${escapeHTML(String(post.id))}">Delete</button>` : ""}
         </div>
       </div>
       <div class="post-card-side">
@@ -2259,6 +2353,68 @@ function bindCommentReplyActions() {
   return { clearReply, openReply };
 }
 
+function bindCommentOwnerActions() {
+  document.querySelectorAll("[data-action='edit-comment']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const commentID = button.getAttribute("data-edit-comment-id");
+      if (!commentID) return;
+      const commentCard = button.closest(".comment-card");
+      const text = commentCard ? commentCard.querySelector(".comment-text") : null;
+      state.editingCommentID = commentID;
+      state.editingCommentDraft = text ? text.textContent || "" : "";
+      router();
+    });
+  });
+
+  document.querySelectorAll("[data-action='cancel-edit-comment']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editingCommentID = "";
+      state.editingCommentDraft = "";
+      router();
+    });
+  });
+
+  document.querySelectorAll("[data-comment-edit-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const commentID = form.getAttribute("data-comment-edit-form");
+      if (!commentID) return;
+      const data = new FormData(form);
+      try {
+        await apiFetch(`/api/comments/${commentID}`, {
+          method: "PUT",
+          body: JSON.stringify({ body: data.get("body") }),
+        });
+        state.editingCommentID = "";
+        state.editingCommentDraft = "";
+        router();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to update comment.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-comment']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const commentID = button.getAttribute("data-delete-comment-id");
+      if (!commentID) return;
+      if (!confirm("Delete this comment?")) return;
+      try {
+        await apiFetch(`/api/comments/${commentID}`, { method: "DELETE" });
+        if (normalizeUserID(state.editingCommentID) === normalizeUserID(commentID)) {
+          state.editingCommentID = "";
+          state.editingCommentDraft = "";
+        }
+        router();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to delete comment.");
+      }
+    });
+  });
+}
+
 function bindCommentComposerAutosize() {
   const textarea = document.querySelector("#comment-form textarea[name='body']");
   if (!(textarea instanceof HTMLTextAreaElement)) return;
@@ -2297,6 +2453,9 @@ async function ensureUser(force = false) {
     if (!state.usersLoaded) {
       await ensureUsersLoaded();
     }
+    if (!state.center.summaryLoaded) {
+      await ensureNotificationSummary();
+    }
     ensureRealtimeSocket();
     return;
   }
@@ -2312,11 +2471,13 @@ async function ensureUser(force = false) {
   const currentUserID = normalizeUserID(state.user && state.user.id);
   if (force || previousUserID !== currentUserID) {
     state.dmUnreadByPeer = loadPersistedDMUnreadState(currentUserID);
+    resetCenterState();
     syncNotificationButton();
   }
   if (force || !state.usersLoaded || previousUserID !== currentUserID) {
     await ensureUsersLoaded(force || previousUserID !== currentUserID);
   }
+  await ensureNotificationSummary(force || previousUserID !== currentUserID);
   if (force) closeRealtimeSocket();
   ensureRealtimeSocket();
 }
@@ -2342,6 +2503,48 @@ async function ensureAuthProviders(force = false) {
   } finally {
     state.authProvidersLoaded = true;
   }
+}
+
+async function ensureNotificationSummary(force = false) {
+  if (!state.user) {
+    resetCenterState();
+    syncNotificationButton();
+    return;
+  }
+  if (state.center.summaryLoaded && !force) {
+    syncNotificationButton();
+    return;
+  }
+
+  try {
+    const summary = await apiFetch("/api/center/summary");
+    setNotificationSummary(summary);
+  } catch (_) {
+    setNotificationSummary({ total: 0, dm: 0, myContent: 0, subscriptions: 0 });
+  }
+}
+
+function normalizeNotificationItem(notification) {
+  if (!notification || typeof notification !== "object") return null;
+  const id = normalizeUserID(notification.id);
+  const bucket = String(notification.bucket || "").trim();
+  const type = String(notification.type || "").trim();
+  const text = String(notification.text || "").trim();
+  const context = String(notification.context || "").trim();
+  const linkPath = String(notification.linkPath || notification.link_path || "").trim();
+  const createdAt = String(notification.createdAt || notification.created_at || "").trim();
+  if (!id || !bucket || !type || !text || !createdAt) return null;
+  return {
+    id,
+    bucket,
+    type,
+    text,
+    context,
+    linkPath,
+    entityAvailable: Boolean(notification.entityAvailable ?? notification.entity_available ?? true),
+    isRead: Boolean(notification.isRead ?? notification.is_read ?? false),
+    createdAt,
+  };
 }
 
 async function ensureUsersLoaded(force = false) {
@@ -2405,6 +2608,98 @@ async function loadDMPeers(force = false) {
   syncDMPeersPanel();
 }
 
+async function loadCenterActivity(force = false) {
+  if (!state.user) {
+    state.center.activityLoaded = false;
+    state.center.activity = {
+      posts: [],
+      postsHasMore: false,
+      reactions: [],
+      reactionsHasMore: false,
+      comments: [],
+      commentsHasMore: false,
+    };
+    return;
+  }
+  if (state.center.activityLoaded && !force) return;
+
+  const activity = await apiFetch("/api/center/activity?limit=20");
+  state.center.activity = {
+    posts: Array.isArray(activity && activity.posts) ? activity.posts : [],
+    postsHasMore: Boolean(activity && activity.postsHasMore),
+    reactions: Array.isArray(activity && activity.reactions) ? activity.reactions : [],
+    reactionsHasMore: Boolean(activity && activity.reactionsHasMore),
+    comments: Array.isArray(activity && activity.comments) ? activity.comments : [],
+    commentsHasMore: Boolean(activity && activity.commentsHasMore),
+  };
+  state.center.activityLoaded = true;
+}
+
+function getNotificationBucketState(bucket) {
+  const normalizedBucket = String(bucket || "").trim();
+  if (!state.center.notifications[normalizedBucket]) {
+    state.center.notifications[normalizedBucket] = {
+      loaded: false,
+      loading: false,
+      items: [],
+      hasMore: false,
+    };
+  }
+  return state.center.notifications[normalizedBucket];
+}
+
+async function loadCenterNotifications(bucket, { force = false, append = false } = {}) {
+  const normalizedBucket = String(bucket || "").trim();
+  const bucketState = getNotificationBucketState(normalizedBucket);
+  if (!state.user) {
+    bucketState.loaded = false;
+    bucketState.items = [];
+    bucketState.hasMore = false;
+    bucketState.loading = false;
+    return;
+  }
+  if (bucketState.loading) return;
+  if (bucketState.loaded && !force && !append) return;
+  if (append && !bucketState.hasMore) return;
+
+  bucketState.loading = true;
+  const offset = append ? bucketState.items.length : 0;
+  try {
+    const response = await apiFetch(`/api/center/notifications?bucket=${encodeURIComponent(normalizedBucket)}&limit=20&offset=${offset}`);
+    const items = Array.isArray(response && response.items) ? response.items.map(normalizeNotificationItem).filter(Boolean) : [];
+    bucketState.items = append ? [...bucketState.items, ...items] : items;
+    bucketState.hasMore = Boolean(response && response.hasMore);
+    bucketState.loaded = true;
+    if (response && response.summary) {
+      setNotificationSummary(response.summary);
+    }
+  } finally {
+    bucketState.loading = false;
+  }
+}
+
+function upsertNotificationItem(item, { prepend = false } = {}) {
+  const normalizedItem = normalizeNotificationItem(item);
+  if (!normalizedItem) return;
+
+  const bucketState = getNotificationBucketState(normalizedItem.bucket);
+  const existingIndex = bucketState.items.findIndex((entry) => normalizeUserID(entry && entry.id) === normalizedItem.id);
+  if (existingIndex >= 0) {
+    bucketState.items[existingIndex] = normalizedItem;
+    return;
+  }
+  bucketState.items = prepend ? [normalizedItem, ...bucketState.items] : [...bucketState.items, normalizedItem];
+}
+
+function replaceNotificationItem(item) {
+  const normalizedItem = normalizeNotificationItem(item);
+  if (!normalizedItem) return;
+  const bucketState = getNotificationBucketState(normalizedItem.bucket);
+  const existingIndex = bucketState.items.findIndex((entry) => normalizeUserID(entry && entry.id) === normalizedItem.id);
+  if (existingIndex < 0) return;
+  bucketState.items[existingIndex] = normalizedItem;
+}
+
 function isMessageForPeer(message, peerID) {
   const me = getCurrentUserID();
   const peer = normalizeUserID(peerID);
@@ -2447,6 +2742,7 @@ async function markDMConversationRead(peerID, lastReadMessageID) {
     method: "POST",
     body: JSON.stringify({ lastReadMessageId: lastReadID }),
   });
+  void ensureNotificationSummary(true);
 }
 
 async function loadDMConversation(peerID, limit = DM_HISTORY_PAGE_SIZE) {
@@ -2528,11 +2824,11 @@ function openDM(peerID) {
 }
 
 function openNotifications() {
-  if (getTotalUnreadCount() > 0) {
-    navigate("/dm");
+  if (!state.user) {
+    alert("Login to open your center.");
     return;
   }
-  alert("No new notifications");
+  navigate(getCenterTabPath("notifications", getPreferredNotificationBucket()));
 }
 
 function closeDMConversation() {
@@ -2540,6 +2836,32 @@ function closeDMConversation() {
   clearDMConversationState(true);
   syncPresencePanel();
   navigate(target);
+}
+
+async function togglePostSubscription(postID, subscribed) {
+  const id = normalizeUserID(postID);
+  if (!id) return;
+  if (subscribed) {
+    await apiFetch(`/api/posts/${id}/subscription`, { method: "DELETE" });
+    return;
+  }
+  await apiFetch(`/api/posts/${id}/subscription`, { method: "POST", body: "{}" });
+}
+
+async function toggleAuthorFollow(username, following) {
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) return;
+  if (following) {
+    await apiFetch(`/api/u/${encodeURIComponent(normalizedUsername)}/follow`, { method: "DELETE" });
+    return;
+  }
+  await apiFetch(`/api/u/${encodeURIComponent(normalizedUsername)}/follow`, { method: "POST", body: "{}" });
+}
+
+async function deletePostByID(postID) {
+  const id = normalizeUserID(postID);
+  if (!id) return;
+  await apiFetch(`/api/posts/${id}`, { method: "DELETE" });
 }
 
 async function loadPublicProfile(username) {
@@ -2563,6 +2885,45 @@ function sendDMMessage(body, attachment) {
       ...(getAttachmentNumericID(attachment) ? { attachmentId: normalizeUserID(attachment && attachment.id) } : {}),
     })
   );
+}
+
+function refreshCenterRouteIfOpen() {
+  if (location.pathname !== "/center") return;
+  if (!state.user) return;
+  app.innerHTML = renderLayout({
+    mode: "center",
+    hideHeading: true,
+    content: renderCenterContent(getCenterTab(), getCenterSubtab()),
+  });
+  bindHeaderActions();
+  bindCenterActions();
+}
+
+function handleRealtimeNotificationNew(payload) {
+  if (payload && payload.notification) {
+    upsertNotificationItem(payload.notification, { prepend: true });
+  }
+  if (payload && payload.summary) {
+    setNotificationSummary(payload.summary);
+  }
+  refreshCenterRouteIfOpen();
+}
+
+function handleRealtimeNotificationUpdate(payload) {
+  if (payload && payload.notification) {
+    replaceNotificationItem(payload.notification);
+  }
+  if (payload && payload.summary) {
+    setNotificationSummary(payload.summary);
+  }
+  refreshCenterRouteIfOpen();
+}
+
+function handleRealtimeNotificationSummary(payload) {
+  if (payload && payload.summary) {
+    setNotificationSummary(payload.summary);
+  }
+  refreshCenterRouteIfOpen();
 }
 
 function handleRealtimeMessage(payload) {
@@ -2604,6 +2965,21 @@ function handleRealtimeMessage(payload) {
 
   if (payload.type === "typing:update") {
     handleTypingUpdate(payload);
+    return;
+  }
+
+  if (payload.type === "notification:new") {
+    handleRealtimeNotificationNew(payload);
+    return;
+  }
+
+  if (payload.type === "notification:update") {
+    handleRealtimeNotificationUpdate(payload);
+    return;
+  }
+
+  if (payload.type === "notification:summary") {
+    handleRealtimeNotificationSummary(payload);
     return;
   }
 
@@ -2691,6 +3067,301 @@ async function loadPosts() {
   if (q) params.set("q", q);
   const qs = params.toString();
   return apiFetch(qs ? `/api/posts?${qs}` : "/api/posts");
+}
+
+function getCenterTab() {
+  const tab = String(getSearchParam("tab") || "").trim().toLowerCase();
+  return tab === "notifications" ? "notifications" : "activity";
+}
+
+function getCenterSubtab() {
+  const subtab = String(getSearchParam("subtab") || "").trim().toLowerCase();
+  if (CENTER_NOTIFICATION_BUCKETS.includes(subtab)) return subtab;
+  return "dm";
+}
+
+function getCenterTabPath(tab, subtab = getCenterSubtab()) {
+  if (tab === "notifications") {
+    return `/center?tab=notifications&subtab=${encodeURIComponent(subtab || "dm")}`;
+  }
+  return "/center?tab=activity";
+}
+
+function getPreferredNotificationBucket() {
+  if (getNotificationBucketUnreadCount("dm") > 0) return "dm";
+  if (getNotificationBucketUnreadCount("my_content") > 0) return "my_content";
+  if (getNotificationBucketUnreadCount("subscriptions") > 0) return "subscriptions";
+  return "dm";
+}
+
+function renderCenterTabs(activeTab) {
+  return `
+    <div class="center-tabs" role="tablist" aria-label="Center tabs">
+      <a class="center-tab ${activeTab === "activity" ? "is-active" : ""}" data-link href="${escapeHTML(getCenterTabPath("activity"))}" role="tab" aria-selected="${activeTab === "activity" ? "true" : "false"}">Activity</a>
+      <a class="center-tab ${activeTab === "notifications" ? "is-active" : ""}" data-link href="${escapeHTML(getCenterTabPath("notifications", getCenterSubtab()))}" role="tab" aria-selected="${activeTab === "notifications" ? "true" : "false"}">Notifications</a>
+    </div>
+  `;
+}
+
+function getNotificationBucketLabel(bucket) {
+  switch (bucket) {
+    case "dm":
+      return "DM";
+    case "my_content":
+      return "My content";
+    case "subscriptions":
+      return "Subscriptions";
+    default:
+      return "Notifications";
+  }
+}
+
+function renderNotificationSubtabs(activeBucket) {
+  return `
+    <div class="center-subtabs" role="tablist" aria-label="Notification tabs">
+      ${CENTER_NOTIFICATION_BUCKETS.map((bucket) => {
+        const unread = getNotificationBucketUnreadCount(bucket);
+        return `
+          <a
+            class="center-subtab ${activeBucket === bucket ? "is-active" : ""}"
+            data-link
+            href="${escapeHTML(getCenterTabPath("notifications", bucket))}"
+            role="tab"
+            aria-selected="${activeBucket === bucket ? "true" : "false"}"
+          >
+            <span>${escapeHTML(getNotificationBucketLabel(bucket))}</span>
+            ${unread > 0 ? `<span class="center-badge">${escapeHTML(String(unread))}</span>` : ""}
+          </a>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderCenterNotificationItem(item) {
+  if (!item) return "";
+  const meta = item.context || (item.entityAvailable ? "" : "content is no longer available");
+  return `
+    <article class="center-item center-notification-item${item.isRead ? " is-read" : " is-unread"}">
+      <div class="center-item-main">
+        <div class="center-item-head">
+          <strong>${escapeHTML(item.text)}</strong>
+          <span class="center-item-meta">${escapeHTML(formatDate(item.createdAt))}</span>
+        </div>
+        ${meta ? `<div class="center-item-body">${escapeHTML(meta)}</div>` : ""}
+        <div class="center-item-actions">
+          ${item.linkPath ? `<a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(item.linkPath)}">${item.entityAvailable ? "Open" : "View context"}</a>` : ""}
+          ${item.isRead ? `<span class="center-status-label">Read</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="notification-read" data-notification-id="${escapeHTML(item.id)}">Mark as read</button>`}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderCenterNotificationPanel(activeBucket) {
+  const bucketState = getNotificationBucketState(activeBucket);
+  const items = Array.isArray(bucketState.items) ? bucketState.items : [];
+  const unread = getNotificationBucketUnreadCount(activeBucket);
+  return `
+    <section class="surface center-panel">
+      <div class="section-row center-panel-head">
+        <div>
+          <h2>${escapeHTML(getNotificationBucketLabel(activeBucket))}</h2>
+          <p>${unread > 0 ? `${unread} unread` : "All caught up"}</p>
+        </div>
+        <div class="center-panel-actions">
+          ${unread > 0 ? `<button class="btn btn-ghost btn-compact" type="button" data-action="notifications-read-all" data-notification-bucket="${escapeHTML(activeBucket)}">Mark all as read</button>` : ""}
+        </div>
+      </div>
+      <div class="center-list">
+        ${items.length ? items.map(renderCenterNotificationItem).join("") : renderEmpty("No notifications", "Nothing here yet.")}
+      </div>
+      ${bucketState.hasMore ? `<div class="center-panel-footer"><button class="btn btn-ghost" type="button" data-action="notifications-load-more" data-notification-bucket="${escapeHTML(activeBucket)}">Load more</button></div>` : ""}
+    </section>
+  `;
+}
+
+function renderActivityPostItem(post) {
+  if (!post) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <a class="center-item-link" data-link href="/post/${post.id}">${escapeHTML(post.title || "Untitled post")}</a>
+        <span class="center-item-meta">${escapeHTML(formatDate(post.created_at))}</span>
+      </div>
+      <div class="center-item-body">${escapeHTML(String(post.body || "").trim())}</div>
+    </article>
+  `;
+}
+
+function renderActivityReactionItem(reaction) {
+  if (!reaction) return "";
+  const actionLabel = Number(reaction.value) > 0 ? "liked" : "disliked";
+  const targetLabel = reaction.targetType === "comment" ? "comment" : "post";
+  const context = reaction.targetType === "comment" ? reaction.commentPreview || reaction.postTitle : reaction.postTitle || reaction.postPreview;
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        ${reaction.linkPath ? `<a class="center-item-link" data-link href="${escapeHTML(reaction.linkPath)}">You ${escapeHTML(actionLabel)} a ${escapeHTML(targetLabel)}</a>` : `<strong>You ${escapeHTML(actionLabel)} a ${escapeHTML(targetLabel)}</strong>`}
+        <span class="center-item-meta">${escapeHTML(formatDate(reaction.createdAt))}</span>
+      </div>
+      ${context ? `<div class="center-item-body">${escapeHTML(context)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderActivityCommentItem(item) {
+  if (!item || !item.comment) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        ${item.linkPath ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">Comment on ${escapeHTML(item.postTitle || "post")}</a>` : `<strong>Comment</strong>`}
+        <span class="center-item-meta">${escapeHTML(formatDate(item.comment.created_at || item.comment.createdAt))}</span>
+      </div>
+      <div class="center-item-body">${escapeHTML(String(item.comment.body || "").trim())}</div>
+    </article>
+  `;
+}
+
+function renderActivitySection(title, subtitle, items, renderer, hasMore) {
+  return `
+    <section class="surface center-panel">
+      <div class="section-row center-panel-head">
+        <div>
+          <h2>${escapeHTML(title)}</h2>
+          <p>${escapeHTML(subtitle)}</p>
+        </div>
+      </div>
+      <div class="center-list">
+        ${Array.isArray(items) && items.length ? items.map(renderer).join("") : renderEmpty(`No ${title.toLowerCase()} yet`, "Nothing to show right now.")}
+      </div>
+      ${hasMore ? `<div class="center-panel-footer"><span class="side-note">Showing the latest 20 items.</span></div>` : ""}
+    </section>
+  `;
+}
+
+function renderCenterContent(activeTab, activeBucket) {
+  const activity = state.center.activity || { posts: [], reactions: [], comments: [] };
+  return `
+    <section class="page-head">
+      <div>
+        <h1>Center</h1>
+        <p>One place for your activity and incoming notifications.</p>
+      </div>
+    </section>
+    <section class="center-shell">
+      ${renderCenterTabs(activeTab)}
+      ${
+        activeTab === "notifications"
+          ? `
+            ${renderNotificationSubtabs(activeBucket)}
+            ${renderCenterNotificationPanel(activeBucket)}
+          `
+          : `
+            <div class="center-activity-grid">
+              ${renderActivitySection("My posts", "Posts you created.", activity.posts, renderActivityPostItem, activity.postsHasMore)}
+              ${renderActivitySection("My reactions", "Where you liked or disliked content.", activity.reactions, renderActivityReactionItem, activity.reactionsHasMore)}
+              ${renderActivitySection("My comments", "Your comments with linked post context.", activity.comments, renderActivityCommentItem, activity.commentsHasMore)}
+            </div>
+          `
+      }
+    </section>
+  `;
+}
+
+async function centerView() {
+  await ensureUser(true);
+  if (!state.user) {
+    return {
+      html: renderLayout({
+        mode: "center",
+        hideHeading: true,
+        content: `<section class="surface form-card"><h2>Center</h2><p>Login to open your activity and notifications center.</p></section>`,
+      }),
+      onMount: bindHeaderActions,
+    };
+  }
+
+  const activeTab = getCenterTab();
+  const activeBucket = getCenterSubtab();
+
+  await ensureNotificationSummary();
+  if (activeTab === "notifications") {
+    await loadCenterNotifications(activeBucket);
+  } else {
+    await loadCenterActivity();
+  }
+
+  return {
+    html: renderLayout({
+      mode: "center",
+      hideHeading: true,
+      content: renderCenterContent(activeTab, activeBucket),
+    }),
+    onMount: () => {
+      bindHeaderActions();
+      bindCenterActions();
+    },
+  };
+}
+
+function bindCenterActions() {
+  document.querySelectorAll("[data-action='notification-read']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const notificationID = button.getAttribute("data-notification-id");
+      if (!notificationID) return;
+      try {
+        const response = await apiFetch(`/api/center/notifications/${encodeURIComponent(notificationID)}/read`, {
+          method: "POST",
+          body: "{}",
+        });
+        if (response && response.notification) {
+          replaceNotificationItem(response.notification);
+        }
+        if (response && response.summary) {
+          setNotificationSummary(response.summary);
+        }
+        refreshCenterRouteIfOpen();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to mark notification as read.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='notifications-read-all']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const bucket = button.getAttribute("data-notification-bucket") || "";
+      try {
+        const response = await apiFetch("/api/center/notifications/read-all", {
+          method: "POST",
+          body: JSON.stringify({ bucket }),
+        });
+        const bucketState = getNotificationBucketState(bucket);
+        bucketState.items = bucketState.items.map((item) => ({ ...item, isRead: true }));
+        if (response && response.summary) {
+          setNotificationSummary(response.summary);
+        }
+        refreshCenterRouteIfOpen();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to mark notifications as read.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='notifications-load-more']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const bucket = button.getAttribute("data-notification-bucket") || "";
+      try {
+        await loadCenterNotifications(bucket, { append: true });
+        refreshCenterRouteIfOpen();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to load more notifications.");
+      }
+    });
+  });
 }
 
 async function feedView() {
@@ -2873,6 +3544,11 @@ async function profileView(params) {
         <h1>${escapeHTML(heading)}</h1>
         <p class="profile-handle">${escapeHTML(subtitle)}</p>
       </div>
+      ${
+        !isSelf && state.user
+          ? `<button class="btn btn-ghost" type="button" data-action="toggle-author-follow" data-username="${escapeHTML(routeUsername)}" data-following="${profile.isFollowing ? "1" : "0"}">${profile.isFollowing ? "Unfollow author" : "Follow author"}</button>`
+          : ""
+      }
     </section>
     <section class="surface form-card profile-card">
       <div class="section-row">
@@ -3517,8 +4193,11 @@ function getCommentParentID(comment) {
 function renderComment(comment, { isReply = false } = {}) {
   const authorUsername = getAuthorUsername(comment);
   const author = getAuthorDisplay(comment);
+  const isOwner = isCurrentUserOwner(comment);
+  const isEditing = normalizeUserID(comment && comment.id) === normalizeUserID(state.editingCommentID);
+  const editable = canEditComment(comment);
   return `
-    <article class="surface comment-card${isReply ? " is-reply" : ""}">
+    <article id="comment-${escapeHTML(String(comment.id))}" class="surface comment-card${isReply ? " is-reply" : ""}">
       <div class="author-line">
         ${avatarMarkup(author, comment.avatarUrl, "xs")}
         <div>
@@ -3526,11 +4205,28 @@ function renderComment(comment, { isReply = false } = {}) {
           <div class="meta-line">${escapeHTML(formatDate(comment.created_at))}</div>
         </div>
       </div>
-      <p class="comment-text">${escapeHTML(comment.body)}</p>
+      ${
+        isEditing
+          ? `
+            <form class="comment-edit-form form-stack" data-comment-edit-form="${escapeHTML(String(comment.id))}">
+              <label class="field">
+                <span>Edit comment</span>
+                <textarea name="body" rows="4" required>${escapeHTML(state.editingCommentDraft || comment.body || "")}</textarea>
+              </label>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit">Save</button>
+                <button class="btn btn-ghost" type="button" data-action="cancel-edit-comment">Cancel</button>
+              </div>
+            </form>
+          `
+          : `<p class="comment-text">${escapeHTML(comment.body)}</p>`
+      }
       <div class="action-row" data-comment="${comment.id}">
         <button class="action-pill" type="button" data-action="like">${icon("like")} ${comment.likes || 0}</button>
         <button class="action-pill" type="button" data-action="dislike">${icon("dislike")} ${comment.dislikes || 0}</button>
         <button class="action-pill action-pill-reply" type="button" data-action="reply-comment" data-reply-comment-id="${comment.id}" data-reply-author="${escapeHTML(author)}">Reply</button>
+        ${isOwner ? `<button class="action-pill" type="button" data-action="edit-comment" data-edit-comment-id="${escapeHTML(String(comment.id))}" ${editable ? "" : "disabled"}>${editable ? "Edit" : "Edit expired"}</button>` : ""}
+        ${isOwner ? `<button class="action-pill" type="button" data-action="delete-comment" data-delete-comment-id="${escapeHTML(String(comment.id))}">Delete</button>` : ""}
       </div>
     </article>
   `;
@@ -3604,6 +4300,8 @@ async function postView(params) {
   const categoriesMarkup = categoryTags(post.categories);
   const viewsCount = post.views_count ?? post.views ?? 0;
   const attachmentMarkup = renderImageAttachment(post && post.attachment, "post-detail-image", post && post.title ? `${post.title} attachment` : "Post attachment");
+  const isOwner = isCurrentUserOwner(post);
+  const editMode = isOwner && getSearchParam("edit") === "1";
 
   const content = `
     <section class="post-hero surface">
@@ -3639,6 +4337,18 @@ async function postView(params) {
                 <button class="action-pill" type="button" data-action="like" aria-label="Like">${icon("like")} ${post.likes || 0}</button>
                 <button class="action-pill" type="button" data-action="dislike" aria-label="Dislike">${icon("dislike")} ${post.dislikes || 0}</button>
                 <a class="action-pill" href="#comments-section" aria-label="Comments">${icon("comment")} ${post.comments_count ?? comments.length}</a>
+                ${
+                  !isOwner && state.user
+                    ? `<button class="action-pill" type="button" data-action="toggle-post-subscription" data-post-id="${escapeHTML(String(post.id))}" data-subscribed="${post.isSubscribed ? "1" : "0"}">${post.isSubscribed ? "Unsubscribe" : "Subscribe"}</button>`
+                    : ""
+                }
+                ${
+                  !isOwner && state.user
+                    ? `<button class="action-pill" type="button" data-action="toggle-author-follow" data-username="${escapeHTML(authorUsername)}" data-following="${post.isFollowingAuthor ? "1" : "0"}">${post.isFollowingAuthor ? "Unfollow author" : "Follow author"}</button>`
+                    : ""
+                }
+                ${isOwner ? `<a class="action-pill" data-link href="/post/${post.id}?edit=1">Edit</a>` : ""}
+                ${isOwner ? `<button class="action-pill" type="button" data-action="delete-post" data-post-id="${escapeHTML(String(post.id))}">Delete</button>` : ""}
               </div>
             </div>
             <div class="hero-main-side">
@@ -3659,6 +4369,44 @@ async function postView(params) {
         </div>
       </div>
     </section>
+
+    ${
+      editMode
+        ? `
+          <section class="surface form-card">
+            <div class="section-row">
+              <h2>Edit post</h2>
+              <p>Update your title, body and categories.</p>
+            </div>
+            <form id="post-edit-form" class="form-stack">
+              <label class="field"><span>Title</span><input type="text" name="title" required value="${escapeHTML(post.title || "")}" /></label>
+              <label class="field"><span>Body</span><textarea name="body" required>${escapeHTML(post.body || "")}</textarea></label>
+              <div class="field">
+                <span>Categories</span>
+                <div class="category-grid">
+                  ${(state.categories || [])
+                    .map((cat) => {
+                      const checked = Array.isArray(post.categories) && post.categories.some((entry) => String(entry.id) === String(cat.id));
+                      return `
+                        <label class="check-chip">
+                          <input type="checkbox" name="categories" value="${escapeHTML(String(cat.id))}" ${checked ? "checked" : ""} />
+                          <span>${escapeHTML(cat.name)}</span>
+                        </label>
+                      `;
+                    })
+                    .join("")}
+                </div>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit">Save changes</button>
+                <a class="btn btn-ghost btn-cancel" data-link href="/post/${post.id}">Cancel</a>
+              </div>
+              <div id="post-edit-error"></div>
+            </form>
+          </section>
+        `
+        : ""
+    }
 
     ${
       commentQuery
@@ -3708,8 +4456,36 @@ async function postView(params) {
       syncPostTypingIndicator(post.id);
       bindPostReactions();
       bindCommentReactions();
+      bindCommentOwnerActions();
       bindCommentComposerAutosize();
       const replyUI = bindCommentReplyActions();
+      const postEditForm = document.getElementById("post-edit-form");
+      if (postEditForm) {
+        postEditForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const errorBox = document.getElementById("post-edit-error");
+          if (errorBox) errorBox.innerHTML = "";
+          const data = new FormData(postEditForm);
+          const selectedCategories = data
+            .getAll("categories")
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0);
+          try {
+            await apiFetch(`/api/posts/${post.id}`, {
+              method: "PUT",
+              body: JSON.stringify({
+                title: data.get("title"),
+                body: data.get("body"),
+                categories: selectedCategories,
+              }),
+            });
+            navigate(`/post/${post.id}`);
+          } catch (err) {
+            if (err && err.handled) return;
+            if (errorBox) errorBox.innerHTML = renderNotice(err.message || "Failed to update post.");
+          }
+        });
+      }
       const form = document.getElementById("comment-form");
       if (form) {
         form.addEventListener("submit", async (e) => {
@@ -3735,12 +4511,19 @@ async function postView(params) {
           }
         });
       }
+      if (location.hash) {
+        const target = document.querySelector(location.hash);
+        if (target) {
+          target.scrollIntoView({ block: "start" });
+        }
+      }
     },
   };
 }
 
 const routes = [
   { path: "/", view: feedView },
+  { path: "/center", view: centerView },
   { path: "/login", view: loginView },
   { path: "/register", view: registerView },
   { path: "/account-link", view: accountLinkView },
@@ -3790,6 +4573,10 @@ async function router() {
     state.dmOlderLoadAt = 0;
     state.dmDraftAttachment = null;
     state.dmAttachmentUploading = false;
+  }
+  if (!getActivePostIDFromPath(location.pathname)) {
+    state.editingCommentID = "";
+    state.editingCommentDraft = "";
   }
   if (location.pathname !== "/new") {
     state.postDraftAttachment = null;
@@ -3900,6 +4687,63 @@ document.addEventListener("click", (e) => {
     state.filters.mine = true;
     state.filters.liked = false;
     navigate("/");
+    return;
+  }
+
+  const toggleSubscriptionButton = e.target.closest("[data-action='toggle-post-subscription']");
+  if (toggleSubscriptionButton) {
+    e.preventDefault();
+    if (!state.user) {
+      alert("Login to manage post subscriptions.");
+      return;
+    }
+    const postID = toggleSubscriptionButton.getAttribute("data-post-id");
+    const subscribed = toggleSubscriptionButton.getAttribute("data-subscribed") === "1";
+    togglePostSubscription(postID, subscribed)
+      .then(() => router())
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to update post subscription.");
+      });
+    return;
+  }
+
+  const toggleFollowButton = e.target.closest("[data-action='toggle-author-follow']");
+  if (toggleFollowButton) {
+    e.preventDefault();
+    if (!state.user) {
+      alert("Login to follow authors.");
+      return;
+    }
+    const username = toggleFollowButton.getAttribute("data-username");
+    const following = toggleFollowButton.getAttribute("data-following") === "1";
+    toggleAuthorFollow(username, following)
+      .then(() => router())
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to update author follow.");
+      });
+    return;
+  }
+
+  const deletePostButton = e.target.closest("[data-action='delete-post']");
+  if (deletePostButton) {
+    e.preventDefault();
+    const postID = deletePostButton.getAttribute("data-post-id");
+    if (!postID) return;
+    if (!confirm("Delete this post?")) return;
+    deletePostByID(postID)
+      .then(() => {
+        if (location.pathname.startsWith("/post/")) {
+          navigate("/");
+          return;
+        }
+        router();
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to delete post.");
+      });
     return;
   }
 

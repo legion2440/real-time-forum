@@ -136,3 +136,37 @@ func (r *CommentRepo) GetByID(ctx context.Context, id int64) (*domain.Comment, e
 	c.CreatedAt = unixToTime(created)
 	return &c, nil
 }
+
+func (r *CommentRepo) Update(ctx context.Context, comment *domain.Comment) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE comments
+		SET body = ?
+		WHERE id = ?
+	`, comment.Body, comment.ID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
+func (r *CommentRepo) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM comments WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}

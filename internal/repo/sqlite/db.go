@@ -91,6 +91,22 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureReactionCreatedAtColumns(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureNotificationsTable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensurePostSubscriptionsTable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureUserFollowsTable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureAuthIdentitiesTable(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -108,6 +124,10 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := ensureDMReadStateIndexes(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureCenterIndexes(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -344,6 +364,73 @@ func ensureAuthFlowsTable(db *sql.DB) error {
 	return err
 }
 
+func ensureReactionCreatedAtColumns(db *sql.DB) error {
+	for _, tableName := range []string{"post_reactions", "comment_reactions"} {
+		hasColumn, err := tableHasColumn(db, tableName, "created_at")
+		if err != nil {
+			return err
+		}
+		if hasColumn {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE " + tableName + " ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureNotificationsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS notifications (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			actor_user_id INTEGER,
+			bucket TEXT NOT NULL,
+			type TEXT NOT NULL,
+			entity_type TEXT NOT NULL DEFAULT '',
+			entity_id INTEGER NOT NULL DEFAULT 0,
+			secondary_entity_type TEXT NOT NULL DEFAULT '',
+			secondary_entity_id INTEGER NOT NULL DEFAULT 0,
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			is_read INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			read_at INTEGER,
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+		)
+	`)
+	return err
+}
+
+func ensurePostSubscriptionsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS post_subscriptions (
+			user_id INTEGER NOT NULL,
+			post_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, post_id),
+			FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
+		)
+	`)
+	return err
+}
+
+func ensureUserFollowsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS user_follows (
+			follower_user_id INTEGER NOT NULL,
+			followed_user_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (follower_user_id, followed_user_id),
+			FOREIGN KEY(follower_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(followed_user_id) REFERENCES users(id) ON DELETE CASCADE
+		)
+	`)
+	return err
+}
+
 func ensureUserDisplayNameIndex(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name_nocase
@@ -372,6 +459,25 @@ func ensureAttachmentIndexes(db *sql.DB) error {
 func ensureDMReadStateIndexes(db *sql.DB) error {
 	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_private_messages_to_user_id_id ON private_messages(to_user_id, id)`)
 	return err
+}
+
+func ensureCenterIndexes(db *sql.DB) error {
+	statements := []string{
+		`CREATE INDEX IF NOT EXISTS idx_notifications_user_created_at ON notifications(user_id, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_user_bucket_read_created_at ON notifications(user_id, bucket, is_read, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_user_read_created_at ON notifications(user_id, is_read, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_notifications_entity_lookup ON notifications(entity_type, entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post_id ON post_subscriptions(post_id, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_follows_followed_user_id ON user_follows(followed_user_id, follower_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_post_reactions_user_created_at ON post_reactions(user_id, created_at DESC, post_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_comment_reactions_user_created_at ON comment_reactions(user_id, created_at DESC, comment_id DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureAuthIndexes(db *sql.DB) error {

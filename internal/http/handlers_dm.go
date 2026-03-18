@@ -180,6 +180,11 @@ func (h *Handler) handleDMMarkRead(w http.ResponseWriter, r *http.Request, userI
 	if handleServiceError(w, h.pms.MarkRead(r.Context(), userID, peerID, lastReadMessageID)) {
 		return
 	}
+	if h.center != nil {
+		if _, err := h.center.MarkDMConversationNotificationsRead(r.Context(), userID, peerID, lastReadMessageID); handleServiceError(w, err) {
+			return
+		}
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS post_reactions (
   post_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   value INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (post_id, user_id),
   FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -105,6 +106,7 @@ CREATE TABLE IF NOT EXISTS comment_reactions (
   comment_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   value INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (comment_id, user_id),
   FOREIGN KEY(comment_id) REFERENCES comments(id) ON DELETE CASCADE,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -130,4 +132,40 @@ CREATE TABLE IF NOT EXISTS dm_read_state (
   PRIMARY KEY (user_id, peer_id),
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(peer_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  actor_user_id INTEGER,
+  bucket TEXT NOT NULL,
+  type TEXT NOT NULL,
+  entity_type TEXT NOT NULL DEFAULT '',
+  entity_id INTEGER NOT NULL DEFAULT 0,
+  secondary_entity_type TEXT NOT NULL DEFAULT '',
+  secondary_entity_id INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  is_read INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  read_at INTEGER,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_subscriptions (
+  user_id INTEGER NOT NULL,
+  post_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, post_id),
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_follows (
+  follower_user_id INTEGER NOT NULL,
+  followed_user_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (follower_user_id, followed_user_id),
+  FOREIGN KEY(follower_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(followed_user_id) REFERENCES users(id) ON DELETE CASCADE
 );

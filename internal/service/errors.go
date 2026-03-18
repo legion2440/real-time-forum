@@ -11,6 +11,7 @@ var (
 	ErrEmailTaken                 = errors.New("email already registered")
 	ErrUsernameTaken              = errors.New("username already registered")
 	ErrDisplayNameTaken           = errors.New("display name already taken")
+	ErrCommentEditWindowExpired   = errors.New("comment edit window expired")
 	ErrImageTooBig                = errors.New("image is too big")
 	ErrInvalidImageType           = errors.New("invalid image type")
 	ErrOAuthProviderUnavailable   = errors.New("oauth provider unavailable")

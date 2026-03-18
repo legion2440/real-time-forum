@@ -17,16 +17,18 @@ type Handler struct {
 	auth        *service.AuthService
 	posts       *service.PostService
 	pms         *service.PrivateMessageService
+	center      *service.CenterService
 	attachments *service.AttachmentService
 	hub         *realtimews.Hub
 }
 
 func NewHandler(auth *service.AuthService, posts *service.PostService, services ...any) *Handler {
 	hub := realtimews.NewHub()
-	go hub.Run()
+	startHub := true
 
 	var (
 		pmService         *service.PrivateMessageService
+		centerService     *service.CenterService
 		attachmentService *service.AttachmentService
 	)
 	for _, dependency := range services {
@@ -39,13 +41,26 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 			if attachmentService == nil {
 				attachmentService = value
 			}
+		case *service.CenterService:
+			if centerService == nil {
+				centerService = value
+			}
+		case *realtimews.Hub:
+			if value != nil {
+				hub = value
+				startHub = false
+			}
 		}
+	}
+	if startHub {
+		go hub.Run()
 	}
 
 	return &Handler{
 		auth:        auth,
 		posts:       posts,
 		pms:         pmService,
+		center:      centerService,
 		attachments: attachmentService,
 		hub:         hub,
 	}
@@ -68,6 +83,10 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/attachments/", h.handleAttachmentDownload)
 	apiMux.HandleFunc("/api/dm/peers", h.handleDMPeers)
 	apiMux.HandleFunc("/api/dm/", h.handleDMConversation)
+	apiMux.HandleFunc("/api/center/summary", h.handleCenterSummary)
+	apiMux.HandleFunc("/api/center/activity", h.handleCenterActivity)
+	apiMux.HandleFunc("/api/center/notifications", h.handleCenterNotifications)
+	apiMux.HandleFunc("/api/center/notifications/", h.handleCenterNotificationSubroutes)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)
 	apiMux.HandleFunc("/api/posts", h.handlePosts)
 	apiMux.HandleFunc("/api/posts/", h.handlePostsSubroutes)
@@ -126,7 +145,7 @@ func spaHandler(webDir string) http.Handler {
 func isKnownSPARoute(reqPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimPrefix(reqPath, "/"))
 	switch cleanPath {
-	case "/", "/login", "/register", "/new", "/dm", "/u", "/account-link", "/account-merge":
+	case "/", "/login", "/register", "/new", "/dm", "/u", "/center", "/account-link", "/account-merge":
 		return true
 	}
 	if strings.HasPrefix(cleanPath, "/post/") {

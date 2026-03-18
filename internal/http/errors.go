@@ -30,6 +30,8 @@ func handleServiceError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusConflict, "this username already registered")
 	case errors.Is(err, service.ErrDisplayNameTaken):
 		writeError(w, http.StatusBadRequest, "display name already taken")
+	case errors.Is(err, service.ErrCommentEditWindowExpired):
+		writeErrorMessage(w, http.StatusForbidden, "comment_edit_window_expired", "Comments can only be edited within 30 minutes.")
 	case errors.Is(err, service.ErrOAuthProviderUnavailable):
 		writeErrorMessage(w, http.StatusNotFound, "oauth_provider_unavailable", "OAuth provider is not configured.")
 	case errors.Is(err, service.ErrOAuthProviderReturnedError):

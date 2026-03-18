@@ -68,12 +68,16 @@ type PostRepo interface {
 	List(ctx context.Context, filter domain.PostFilter) ([]domain.Post, error)
 	GetByID(ctx context.Context, id int64) (*domain.Post, error)
 	Exists(ctx context.Context, id int64) (bool, error)
+	Update(ctx context.Context, post *domain.Post, categoryIDs []int64) error
+	Delete(ctx context.Context, id int64) error
 }
 
 type CommentRepo interface {
 	Create(ctx context.Context, comment *domain.Comment) (int64, error)
 	ListByPost(ctx context.Context, postID int64, filter domain.CommentFilter) ([]domain.Comment, error)
 	GetByID(ctx context.Context, id int64) (*domain.Comment, error)
+	Update(ctx context.Context, comment *domain.Comment) error
+	Delete(ctx context.Context, id int64) error
 }
 
 type CategoryRepo interface {
@@ -81,8 +85,8 @@ type CategoryRepo interface {
 }
 
 type ReactionRepo interface {
-	ReactPost(ctx context.Context, postID, userID int64, value int) error
-	ReactComment(ctx context.Context, commentID, userID int64, value int) error
+	ReactPost(ctx context.Context, postID, userID int64, value int, reactedAt time.Time) (domain.ReactionChange, error)
+	ReactComment(ctx context.Context, commentID, userID int64, value int, reactedAt time.Time) (domain.ReactionChange, error)
 }
 
 type AttachmentRepo interface {
@@ -98,4 +102,25 @@ type PrivateMessageRepo interface {
 	ListPeers(ctx context.Context, userID int64) ([]domain.PrivateMessagePeer, error)
 	MarkRead(ctx context.Context, userID, peerID, lastReadMessageID int64, updatedAt time.Time) error
 	ConversationHasMessage(ctx context.Context, userA, userB, messageID int64) (bool, error)
+}
+
+type CenterRepo interface {
+	CreateNotification(ctx context.Context, notification *domain.Notification) (int64, error)
+	GetNotification(ctx context.Context, userID, notificationID int64) (*domain.Notification, error)
+	ListNotifications(ctx context.Context, userID int64, filter domain.NotificationFilter) ([]domain.Notification, error)
+	CountUnreadNotifications(ctx context.Context, userID int64) (domain.NotificationUnreadSummary, error)
+	MarkNotificationRead(ctx context.Context, userID, notificationID int64, readAt time.Time) error
+	MarkAllNotificationsRead(ctx context.Context, userID int64, bucket string, readAt time.Time) error
+	MarkDMNotificationsRead(ctx context.Context, userID, peerID, lastReadMessageID int64, readAt time.Time) error
+	CreatePostSubscription(ctx context.Context, userID, postID int64, createdAt time.Time) error
+	DeletePostSubscription(ctx context.Context, userID, postID int64) error
+	IsPostSubscribed(ctx context.Context, userID, postID int64) (bool, error)
+	ListPostSubscriberUserIDs(ctx context.Context, postID int64) ([]int64, error)
+	CreateUserFollow(ctx context.Context, followerUserID, followedUserID int64, createdAt time.Time) error
+	DeleteUserFollow(ctx context.Context, followerUserID, followedUserID int64) error
+	IsFollowingUser(ctx context.Context, followerUserID, followedUserID int64) (bool, error)
+	ListFollowerUserIDs(ctx context.Context, followedUserID int64) ([]int64, error)
+	ListActivityPosts(ctx context.Context, userID int64, limit, offset int) ([]domain.Post, error)
+	ListActivityComments(ctx context.Context, userID int64, limit, offset int) ([]domain.ActivityComment, error)
+	ListActivityReactions(ctx context.Context, userID int64, limit, offset int) ([]domain.ActivityReaction, error)
 }

@@ -85,6 +85,72 @@ func (r *PostRepo) Exists(ctx context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
+func (r *PostRepo) Update(ctx context.Context, post *domain.Post, categoryIDs []int64) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE posts
+		SET title = ?, body = ?
+		WHERE id = ?
+	`, post.Title, post.Body, post.ID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM post_categories WHERE post_id = ?`, post.ID); err != nil {
+		return err
+	}
+
+	if len(categoryIDs) > 0 {
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO post_categories (post_id, category_id) VALUES (?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, categoryID := range categoryIDs {
+			if _, err := stmt.ExecContext(ctx, post.ID, categoryID); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *PostRepo) Delete(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM posts WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
 func (r *PostRepo) GetByID(ctx context.Context, id int64) (*domain.Post, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT p.id, p.user_id, u.username, u.display_name, p.title, p.body,

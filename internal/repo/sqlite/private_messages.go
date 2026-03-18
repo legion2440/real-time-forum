@@ -114,15 +114,38 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
             u.display_name,
             COALESCE(MAX(pm.created_at), 0) AS last_message_at,
             COALESCE((
-                SELECT COUNT(*)
-                FROM private_messages incoming
-                WHERE incoming.from_user_id = u.id
-                  AND incoming.to_user_id = ?
-                  AND incoming.id > COALESCE((
-                      SELECT rs.last_read_message_id
-                      FROM dm_read_state rs
-                      WHERE rs.user_id = ? AND rs.peer_id = u.id
-                  ), 0)
+                SELECT CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM notifications n0
+                        WHERE n0.user_id = ?
+                          AND n0.bucket = ?
+                          AND n0.type = ?
+                          AND n0.secondary_entity_type = ?
+                          AND n0.secondary_entity_id = u.id
+                        LIMIT 1
+                    ) THEN (
+                        SELECT COUNT(*)
+                        FROM notifications n
+                        WHERE n.user_id = ?
+                          AND n.bucket = ?
+                          AND n.type = ?
+                          AND n.secondary_entity_type = ?
+                          AND n.secondary_entity_id = u.id
+                          AND n.is_read = 0
+                    )
+                    ELSE (
+                        SELECT COUNT(*)
+                        FROM private_messages incoming
+                        WHERE incoming.from_user_id = u.id
+                          AND incoming.to_user_id = ?
+                          AND incoming.id > COALESCE((
+                              SELECT rs.last_read_message_id
+                              FROM dm_read_state rs
+                              WHERE rs.user_id = ? AND rs.peer_id = u.id
+                          ), 0)
+                    )
+                END
             ), 0) AS unread_count
         FROM users u
         LEFT JOIN private_messages pm
@@ -140,7 +163,10 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
                 ELSE u.username
             END) ASC,
             u.id ASC
-    `, userID, userID, userID, userID, userID)
+    `, userID, domain.NotificationBucketDM, domain.NotificationTypeDMMessage, domain.NotificationEntityTypeUser,
+		userID, domain.NotificationBucketDM, domain.NotificationTypeDMMessage, domain.NotificationEntityTypeUser,
+		userID, userID,
+		userID, userID, userID)
 	if err != nil {
 		return nil, err
 	}

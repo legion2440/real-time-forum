@@ -131,6 +131,30 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 		t.Fatal("expected dm_read_state table to be added")
 	}
 
+	hasNotificationsTable, err := tableExists(db, "notifications")
+	if err != nil {
+		t.Fatalf("check notifications table: %v", err)
+	}
+	if !hasNotificationsTable {
+		t.Fatal("expected notifications table to be added")
+	}
+
+	hasPostSubscriptionsTable, err := tableExists(db, "post_subscriptions")
+	if err != nil {
+		t.Fatalf("check post_subscriptions table: %v", err)
+	}
+	if !hasPostSubscriptionsTable {
+		t.Fatal("expected post_subscriptions table to be added")
+	}
+
+	hasUserFollowsTable, err := tableExists(db, "user_follows")
+	if err != nil {
+		t.Fatalf("check user_follows table: %v", err)
+	}
+	if !hasUserFollowsTable {
+		t.Fatal("expected user_follows table to be added")
+	}
+
 	hasPostAttachment, err := tableHasColumn(db, "posts", "attachment_id")
 	if err != nil {
 		t.Fatalf("check posts.attachment_id column: %v", err)
@@ -145,6 +169,22 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 	}
 	if !hasPrivateMessageAttachment {
 		t.Fatal("expected private_messages.attachment_id column to be added")
+	}
+
+	hasPostReactionCreatedAt, err := tableHasColumn(db, "post_reactions", "created_at")
+	if err != nil {
+		t.Fatalf("check post_reactions.created_at column: %v", err)
+	}
+	if !hasPostReactionCreatedAt {
+		t.Fatal("expected post_reactions.created_at column to be added")
+	}
+
+	hasCommentReactionCreatedAt, err := tableHasColumn(db, "comment_reactions", "created_at")
+	if err != nil {
+		t.Fatalf("check comment_reactions.created_at column: %v", err)
+	}
+	if !hasCommentReactionCreatedAt {
+		t.Fatal("expected comment_reactions.created_at column to be added")
 	}
 
 	userRepo := NewUserRepo(db)
