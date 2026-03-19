@@ -132,8 +132,6 @@ func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, pms *service.Priv
 		done:     make(chan struct{}),
 	}
 
-	hub.register <- client
-
 	helloPayload, err := json.Marshal(helloMessage{
 		Type: "hello",
 		User: helloUser{
@@ -142,12 +140,20 @@ func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, pms *service.Priv
 		},
 	})
 	if err != nil {
-		client.unregister()
+		client.close()
 		return err
 	}
 
 	client.send <- helloPayload
-	hub.initialize <- client
+	if !hub.queueRegister(client) {
+		client.close()
+		return nil
+	}
+	if !hub.queueInitialize(client) {
+		client.unregister()
+		client.close()
+		return nil
+	}
 
 	go client.writePump()
 	client.readPump()
@@ -235,17 +241,17 @@ func (c *Client) handlePrivateMessageSend(raw []byte) {
 		return
 	}
 
-	c.hub.deliver <- delivery{
+	_ = c.hub.queueDelivery(delivery{
 		userIDs: []int64{c.userID, toID},
 		payload: payload,
-	}
+	})
 
-	c.hub.typingEvents <- typingEvent{
+	_ = c.hub.queueTypingEvent(typingEvent{
 		client:   c,
 		scope:    typingScopeDM,
 		targetID: toID,
 		kind:     typingEventStop,
-	}
+	})
 }
 
 func (c *Client) handleTypingSignal(raw []byte, kind typingEventKind) {
@@ -257,12 +263,12 @@ func (c *Client) handleTypingSignal(raw []byte, kind typingEventKind) {
 		return
 	}
 
-	c.hub.typingEvents <- typingEvent{
+	_ = c.hub.queueTypingEvent(typingEvent{
 		client:   c,
 		scope:    scope,
 		targetID: targetID,
 		kind:     kind,
-	}
+	})
 }
 
 func (c *Client) handleTypingSubscription(raw []byte, subscribe bool) {
@@ -277,10 +283,10 @@ func (c *Client) handleTypingSubscription(raw []byte, subscribe bool) {
 	}
 
 	if subscribe {
-		c.hub.postSubscriptions <- subscription
+		_ = c.hub.queuePostSubscription(subscription, true)
 		return
 	}
-	c.hub.postUnsubscriptions <- subscription
+	_ = c.hub.queuePostSubscription(subscription, false)
 }
 
 func parseTypingSignalTarget(raw []byte) (string, int64, bool) {
@@ -340,13 +346,20 @@ func (c *Client) close() {
 	c.closeOnce.Do(func() {
 		close(c.done)
 		close(c.send)
-		_ = c.conn.Close()
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
 	})
 }
 
 func (c *Client) unregister() {
 	c.unregisterOnce.Do(func() {
-		c.hub.unregister <- c
+		if c.hub == nil {
+			return
+		}
+		if !c.hub.queueUnregister(c) {
+			c.close()
+		}
 	})
 }
 

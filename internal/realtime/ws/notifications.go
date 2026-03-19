@@ -51,8 +51,8 @@ func (p *NotificationPublisher) publish(userID int64, event notificationEvent) {
 	if err != nil {
 		return
 	}
-	p.hub.deliver <- delivery{
+	_ = p.hub.queueDelivery(delivery{
 		userIDs: []int64{userID},
 		payload: payload,
-	}
+	})
 }

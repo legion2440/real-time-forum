@@ -1,12 +1,15 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	httpserver "forum/internal/http"
@@ -20,15 +23,17 @@ import (
 )
 
 const (
-	defaultDBPath = "forum.db"
-	defaultAddr   = ":8080"
-	defaultWebDir = "web"
-	defaultUpload = "var/uploads"
+	defaultDBPath          = "forum.db"
+	defaultAddr            = ":8080"
+	defaultWebDir          = "web"
+	defaultUpload          = "var/uploads"
+	defaultShutdownTimeout = 10 * time.Second
 )
 
 type runtime struct {
 	db     *sql.DB
 	server *http.Server
+	hub    *realtimews.Hub
 }
 
 type repositories struct {
@@ -62,11 +67,33 @@ func Run() error {
 	}
 	defer runtime.close()
 
-	log.Printf("server listening on %s", runtime.server.Addr)
-	if err := runtime.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("server error: %w", err)
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("server listening on %s", runtime.server.Addr)
+		if err := runtime.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- fmt.Errorf("server error: %w", err)
+			return
+		}
+		serverErr <- nil
+	}()
+
+	select {
+	case err := <-serverErr:
+		return err
+	case <-signalCtx.Done():
+		stopSignals()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
+		defer cancel()
+
+		if err := runtime.shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return <-serverErr
 	}
-	return nil
 }
 
 func bootstrap() (*runtime, error) {
@@ -85,6 +112,7 @@ func bootstrap() (*runtime, error) {
 	return &runtime{
 		db:     db,
 		server: buildServer(services),
+		hub:    services.hub,
 	}, nil
 }
 
@@ -200,6 +228,43 @@ func loadOAuthRegistry() *oauth.Registry {
 	}
 
 	return oauth.NewRegistry(providers...)
+}
+
+func (r *runtime) shutdown(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+
+	if r.hub != nil {
+		r.hub.Stop()
+	}
+	if r.server != nil {
+		if err := r.server.Shutdown(ctx); err != nil {
+			return fmt.Errorf("server shutdown: %w", err)
+		}
+	}
+	if err := waitForHubShutdown(ctx, r.hub); err != nil {
+		return fmt.Errorf("realtime shutdown: %w", err)
+	}
+	return nil
+}
+
+func waitForHubShutdown(ctx context.Context, hub *realtimews.Hub) error {
+	if hub == nil {
+		return nil
+	}
+
+	done := hub.Done()
+	if done == nil {
+		return nil
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (r *runtime) close() {

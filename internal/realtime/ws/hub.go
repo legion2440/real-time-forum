@@ -3,6 +3,7 @@ package ws
 import (
 	"encoding/json"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,9 @@ type Hub struct {
 	typingEvents              chan typingEvent
 	postSubscriptions         chan postSubscription
 	postUnsubscriptions       chan postSubscription
+	stop                      chan struct{}
+	done                      chan struct{}
+	stopOnce                  sync.Once
 }
 
 type delivery struct {
@@ -57,15 +61,23 @@ func NewHub() *Hub {
 		typingEvents:              make(chan typingEvent),
 		postSubscriptions:         make(chan postSubscription),
 		postUnsubscriptions:       make(chan postSubscription),
+		stop:                      make(chan struct{}),
+		done:                      make(chan struct{}),
 	}
 }
 
 func (h *Hub) Run() {
 	expiryTicker := time.NewTicker(typingSweepInterval)
-	defer expiryTicker.Stop()
+	defer func() {
+		expiryTicker.Stop()
+		h.shutdownClients()
+		close(h.done)
+	}()
 
 	for {
 		select {
+		case <-h.stop:
+			return
 		case client := <-h.register:
 			h.registerClient(client)
 		case client := <-h.initialize:
@@ -85,6 +97,77 @@ func (h *Hub) Run() {
 		case now := <-expiryTicker.C:
 			h.expireTyping(now.UTC())
 		}
+	}
+}
+
+func (h *Hub) Stop() {
+	if h == nil {
+		return
+	}
+	h.stopOnce.Do(func() {
+		close(h.stop)
+	})
+}
+
+func (h *Hub) Done() <-chan struct{} {
+	if h == nil {
+		return nil
+	}
+	return h.done
+}
+
+func (h *Hub) queueRegister(client *Client) bool {
+	return queueHubMessage(h, h.register, client)
+}
+
+func (h *Hub) queueInitialize(client *Client) bool {
+	return queueHubMessage(h, h.initialize, client)
+}
+
+func (h *Hub) queueUnregister(client *Client) bool {
+	return queueHubMessage(h, h.unregister, client)
+}
+
+func (h *Hub) queueDelivery(item delivery) bool {
+	return queueHubMessage(h, h.deliver, item)
+}
+
+func (h *Hub) queueTypingEvent(event typingEvent) bool {
+	return queueHubMessage(h, h.typingEvents, event)
+}
+
+func (h *Hub) queuePostSubscription(item postSubscription, subscribe bool) bool {
+	if subscribe {
+		return queueHubMessage(h, h.postSubscriptions, item)
+	}
+	return queueHubMessage(h, h.postUnsubscriptions, item)
+}
+
+func (h *Hub) shutdownClients() {
+	clients := make([]*Client, 0)
+	for _, userClients := range h.clients {
+		for client := range userClients {
+			clients = append(clients, client)
+		}
+	}
+
+	for _, client := range clients {
+		h.unregisterClient(client, false)
+	}
+}
+
+func queueHubMessage[T any](h *Hub, ch chan T, value T) bool {
+	if h == nil {
+		return false
+	}
+
+	select {
+	case <-h.stop:
+		return false
+	case <-h.done:
+		return false
+	case ch <- value:
+		return true
 	}
 }
 
