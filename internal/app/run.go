@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,6 +38,14 @@ type runtime struct {
 	hub    *realtimews.Hub
 }
 
+type runConfig struct {
+	dbPath      string
+	addr        string
+	webDir      string
+	uploadDir   string
+	onListening func(*runtime, net.Addr)
+}
+
 type repositories struct {
 	users           repo.UserRepo
 	sessions        repo.SessionRepo
@@ -61,30 +71,48 @@ type services struct {
 }
 
 func Run() error {
-	runtime, err := bootstrap()
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	return runWithContext(signalCtx, runConfig{}, stopSignals)
+}
+
+func runWithContext(signalCtx context.Context, cfg runConfig, stopSignals func()) error {
+	cfg = cfg.withDefaults()
+
+	runtime, err := bootstrap(cfg)
 	if err != nil {
 		return err
 	}
 	defer runtime.close()
 
-	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
+	listener, err := net.Listen("tcp", cfg.addr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+	runtime.server.Addr = listener.Addr().String()
 
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("server listening on %s", runtime.server.Addr)
-		if err := runtime.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := runtime.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("server error: %w", err)
 			return
 		}
 		serverErr <- nil
 	}()
 
+	if cfg.onListening != nil {
+		cfg.onListening(runtime, listener.Addr())
+	}
+
 	select {
 	case err := <-serverErr:
 		return err
 	case <-signalCtx.Done():
-		stopSignals()
+		if stopSignals != nil {
+			stopSignals()
+		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
 		defer cancel()
@@ -96,14 +124,33 @@ func Run() error {
 	}
 }
 
-func bootstrap() (*runtime, error) {
-	db, err := openDB()
+func (cfg runConfig) withDefaults() runConfig {
+	if strings.TrimSpace(cfg.dbPath) == "" {
+		cfg.dbPath = os.Getenv("FORUM_DB_PATH")
+		if cfg.dbPath == "" {
+			cfg.dbPath = defaultDBPath
+		}
+	}
+	if strings.TrimSpace(cfg.addr) == "" {
+		cfg.addr = defaultAddr
+	}
+	if strings.TrimSpace(cfg.webDir) == "" {
+		cfg.webDir = defaultWebDir
+	}
+	if strings.TrimSpace(cfg.uploadDir) == "" {
+		cfg.uploadDir = defaultUpload
+	}
+	return cfg
+}
+
+func bootstrap(cfg runConfig) (*runtime, error) {
+	db, err := openDB(cfg.dbPath)
 	if err != nil {
 		return nil, err
 	}
 
 	repos := buildRepositories(db)
-	services, err := buildServices(repos)
+	services, err := buildServices(repos, cfg.uploadDir)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -111,17 +158,12 @@ func bootstrap() (*runtime, error) {
 
 	return &runtime{
 		db:     db,
-		server: buildServer(services),
+		server: buildServer(services, cfg.addr, cfg.webDir),
 		hub:    services.hub,
 	}, nil
 }
 
-func openDB() (*sql.DB, error) {
-	dbPath := os.Getenv("FORUM_DB_PATH")
-	if dbPath == "" {
-		dbPath = defaultDBPath
-	}
-
+func openDB(dbPath string) (*sql.DB, error) {
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("db open: %w", err)
@@ -146,13 +188,13 @@ func buildRepositories(db *sql.DB) repositories {
 	}
 }
 
-func buildServices(repos repositories) (services, error) {
+func buildServices(repos repositories, uploadDir string) (services, error) {
 	appClock := clock.RealClock{}
 	hub := realtimews.NewHub()
 	go hub.Run()
 
 	notificationPublisher := realtimews.NewNotificationPublisher(hub)
-	attachmentService, err := service.NewAttachmentService(repos.attachments, appClock, id.UUIDGenerator{}, defaultUpload)
+	attachmentService, err := service.NewAttachmentService(repos.attachments, appClock, id.UUIDGenerator{}, uploadDir)
 	if err != nil {
 		return services{}, fmt.Errorf("attachments init: %w", err)
 	}
@@ -184,7 +226,7 @@ func buildServices(repos repositories) (services, error) {
 	}, nil
 }
 
-func buildServer(services services) *http.Server {
+func buildServer(services services, addr, webDir string) *http.Server {
 	handler := httpserver.NewHandler(
 		services.auth,
 		services.posts,
@@ -195,8 +237,8 @@ func buildServer(services services) *http.Server {
 	)
 
 	return &http.Server{
-		Addr:    defaultAddr,
-		Handler: handler.Routes(defaultWebDir),
+		Addr:    addr,
+		Handler: handler.Routes(webDir),
 	}
 }
 
