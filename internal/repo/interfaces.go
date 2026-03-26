@@ -76,6 +76,9 @@ type CommentRepo interface {
 	Create(ctx context.Context, comment *domain.Comment) (int64, error)
 	ListByPost(ctx context.Context, postID int64, filter domain.CommentFilter) ([]domain.Comment, error)
 	GetByID(ctx context.Context, id int64) (*domain.Comment, error)
+	HasDescendants(ctx context.Context, id int64) (bool, error)
+	HasActiveThreadComments(ctx context.Context, rootID int64) (bool, error)
+	SoftDelete(ctx context.Context, id int64, deletedAt time.Time) error
 	Update(ctx context.Context, comment *domain.Comment) error
 	Delete(ctx context.Context, id int64) error
 }

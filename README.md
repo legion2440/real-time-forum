@@ -279,7 +279,7 @@ real-time-forum/
 
 ## Авторы
 - Nazar Yestayev (@nyestaye / @legion2440)
-- Akhmad Zhagiparov (@azhagipa)
-- Dastan Gabbassov (@dgabbass)
-- Nurgul Ilyassova (@nilyasso)
-- Yernazar Uxumbayev (@yuxumbay)
+- Maxat Shaimardinov (@mshaimard)
+- Asset Mussabekov (@amussabe)
+- Kamshat Berdiyeva (@komarbek)
+- Zhomart Utemissov (@zutemiss)

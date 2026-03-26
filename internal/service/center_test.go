@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ type centerFixture struct {
 	auth   *AuthService
 	posts  *PostService
 	center *CenterService
+	db     *sql.DB
 }
 
 func newCenterFixture(t *testing.T, now time.Time) (*centerFixture, func()) {
@@ -47,6 +49,7 @@ func newCenterFixture(t *testing.T, now time.Time) (*centerFixture, func()) {
 		auth:   authService,
 		posts:  postService,
 		center: centerService,
+		db:     db,
 	}, func() { _ = db.Close() }
 }
 
@@ -230,6 +233,76 @@ func TestCenterService_ListActivityIncludesPostsReactionsAndComments(t *testing.
 	}
 }
 
+func TestCenterService_ListActivityFallsBackLegacyReactionTimestamp(t *testing.T) {
+	now := time.Unix(1700000300, 0).UTC()
+	fixture, cleanup := newCenterFixture(t, now)
+	defer cleanup()
+
+	aliceID := registerTestUser(t, fixture.auth, "alice-legacy@example.com", "alice_legacy")
+	bobID := registerTestUser(t, fixture.auth, "bob-legacy@example.com", "bob_legacy")
+
+	post, err := fixture.posts.CreatePost(context.Background(), bobID, "Legacy Post", "Legacy body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	comment, err := fixture.posts.CreateComment(context.Background(), bobID, post.ID, "Legacy comment", nil)
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if _, err := fixture.posts.ReactPost(context.Background(), aliceID, post.ID, 1); err != nil {
+		t.Fatalf("react post: %v", err)
+	}
+	if _, err := fixture.posts.ReactComment(context.Background(), aliceID, comment.ID, -1); err != nil {
+		t.Fatalf("react comment: %v", err)
+	}
+
+	postFallback := time.Unix(1700000400, 0).UTC()
+	commentFallback := time.Unix(1700000500, 0).UTC()
+	if _, err := fixture.db.ExecContext(context.Background(), `UPDATE posts SET created_at = ? WHERE id = ?`, postFallback.Unix(), post.ID); err != nil {
+		t.Fatalf("set post fallback created_at: %v", err)
+	}
+	if _, err := fixture.db.ExecContext(context.Background(), `UPDATE comments SET created_at = ? WHERE id = ?`, commentFallback.Unix(), comment.ID); err != nil {
+		t.Fatalf("set comment fallback created_at: %v", err)
+	}
+	if _, err := fixture.db.ExecContext(context.Background(), `UPDATE post_reactions SET created_at = 0 WHERE post_id = ? AND user_id = ?`, post.ID, aliceID); err != nil {
+		t.Fatalf("zero post reaction created_at: %v", err)
+	}
+	if _, err := fixture.db.ExecContext(context.Background(), `UPDATE comment_reactions SET created_at = 0 WHERE comment_id = ? AND user_id = ?`, comment.ID, aliceID); err != nil {
+		t.Fatalf("zero comment reaction created_at: %v", err)
+	}
+
+	activity, err := fixture.center.ListActivity(context.Background(), aliceID, 20, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("list activity: %v", err)
+	}
+	if len(activity.Reactions) != 2 {
+		t.Fatalf("expected 2 reactions in activity, got %+v", activity.Reactions)
+	}
+
+	var (
+		postReaction    *domain.ActivityReaction
+		commentReaction *domain.ActivityReaction
+	)
+	for i := range activity.Reactions {
+		switch activity.Reactions[i].TargetType {
+		case domain.NotificationEntityTypePost:
+			postReaction = &activity.Reactions[i]
+		case domain.NotificationEntityTypeComment:
+			commentReaction = &activity.Reactions[i]
+		}
+	}
+
+	if postReaction == nil || commentReaction == nil {
+		t.Fatalf("expected both post and comment reactions, got %+v", activity.Reactions)
+	}
+	if !postReaction.CreatedAt.Equal(postFallback) {
+		t.Fatalf("expected post reaction fallback timestamp %v, got %v", postFallback, postReaction.CreatedAt)
+	}
+	if !commentReaction.CreatedAt.Equal(commentFallback) {
+		t.Fatalf("expected comment reaction fallback timestamp %v, got %v", commentFallback, commentReaction.CreatedAt)
+	}
+}
+
 func TestCenterService_MarkReadAndMarkAll(t *testing.T) {
 	now := time.Unix(1700000400, 0).UTC()
 	fixture, cleanup := newCenterFixture(t, now)
@@ -277,5 +350,96 @@ func TestCenterService_MarkReadAndMarkAll(t *testing.T) {
 	}
 	if summary.Total != 0 || summary.MyContent != 0 {
 		t.Fatalf("unexpected summary after mark all read: %+v", summary)
+	}
+}
+
+func TestCenterService_DeletedPostNotificationKeepsDeletedContext(t *testing.T) {
+	now := time.Unix(1700000600, 0).UTC()
+	fixture, cleanup := newCenterFixture(t, now)
+	defer cleanup()
+
+	aliceID := registerTestUser(t, fixture.auth, "alice-deleted@example.com", "alice_deleted")
+	bobID := registerTestUser(t, fixture.auth, "bob-deleted@example.com", "bob_deleted")
+
+	post, err := fixture.posts.CreatePost(context.Background(), aliceID, "test test", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if _, err := fixture.posts.CreateComment(context.Background(), bobID, post.ID, "once more", nil); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if err := fixture.posts.DeletePost(context.Background(), aliceID, post.ID); err != nil {
+		t.Fatalf("delete post: %v", err)
+	}
+
+	notifications, err := fixture.center.ListNotifications(context.Background(), aliceID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketMyContent,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(notifications.Items) != 1 {
+		t.Fatalf("expected 1 notification, got %+v", notifications.Items)
+	}
+	if notifications.Items[0].EntityAvailable {
+		t.Fatalf("expected deleted post notification to be unavailable, got %+v", notifications.Items[0])
+	}
+	if notifications.Items[0].Context != "[deleted] test test" {
+		t.Fatalf("expected deleted post context, got %+v", notifications.Items[0])
+	}
+}
+
+func TestCenterService_PostCommentNotificationUsesPostAvailabilityEvenIfCommentStillExists(t *testing.T) {
+	now := time.Unix(1700000700, 0).UTC()
+	fixture, cleanup := newCenterFixture(t, now)
+	defer cleanup()
+
+	aliceID := registerTestUser(t, fixture.auth, "alice-orphaned@example.com", "alice_orphaned")
+	bobID := registerTestUser(t, fixture.auth, "bob-orphaned@example.com", "bob_orphaned")
+
+	post, err := fixture.posts.CreatePost(context.Background(), aliceID, "18", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	comment, err := fixture.posts.CreateComment(context.Background(), bobID, post.ID, "once more", nil)
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if comment.ID <= 0 {
+		t.Fatalf("expected comment id, got %+v", comment)
+	}
+
+	conn, err := fixture.db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("open db conn: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign keys: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), `DELETE FROM posts WHERE id = ?`, post.ID); err != nil {
+		t.Fatalf("delete post without cascade: %v", err)
+	}
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+
+	notifications, err := fixture.center.ListNotifications(context.Background(), aliceID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketMyContent,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(notifications.Items) != 1 {
+		t.Fatalf("expected 1 notification, got %+v", notifications.Items)
+	}
+	if notifications.Items[0].EntityAvailable {
+		t.Fatalf("expected deleted post notification to be unavailable, got %+v", notifications.Items[0])
+	}
+	if notifications.Items[0].Context != "[deleted] 18" {
+		t.Fatalf("expected deleted post label, got %+v", notifications.Items[0])
 	}
 }

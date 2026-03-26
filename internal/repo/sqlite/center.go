@@ -449,7 +449,10 @@ func (r *CenterRepo) ListActivityReactions(ctx context.Context, userID int64, li
 				'post' AS target_type,
 				pr.post_id AS target_id,
 				pr.value AS value,
-				pr.created_at AS created_at,
+				CASE
+					WHEN pr.created_at > 0 THEN pr.created_at
+					ELSE p.created_at
+				END AS created_at,
 				p.id AS post_id,
 				p.title AS post_title,
 				p.body AS post_preview,
@@ -469,7 +472,10 @@ func (r *CenterRepo) ListActivityReactions(ctx context.Context, userID int64, li
 				'comment' AS target_type,
 				cr.comment_id AS target_id,
 				cr.value AS value,
-				cr.created_at AS created_at,
+				CASE
+					WHEN cr.created_at > 0 THEN cr.created_at
+					ELSE c.created_at
+				END AS created_at,
 				p.id AS post_id,
 				p.title AS post_title,
 				p.body AS post_preview,

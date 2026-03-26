@@ -577,31 +577,71 @@ func (s *CenterService) isNotificationEntityAvailable(ctx context.Context, notif
 	switch notification.Type {
 	case domain.NotificationTypeDMMessage:
 		return true, nil
-	case domain.NotificationTypePostLiked, domain.NotificationTypePostDisliked, domain.NotificationTypeFollowedAuthorPublished:
-		postID := notification.EntityID
-		if notification.Payload.PostID > 0 {
-			postID = notification.Payload.PostID
+	case domain.NotificationTypePostLiked, domain.NotificationTypePostDisliked, domain.NotificationTypeFollowedAuthorPublished,
+		domain.NotificationTypePostCommented, domain.NotificationTypeSubscribedPostCommented:
+		return s.notificationPostExists(ctx, notification)
+	case domain.NotificationTypeCommentLiked, domain.NotificationTypeCommentDisliked:
+		commentExists, err := s.notificationCommentExists(ctx, notification)
+		if err != nil || !commentExists {
+			return commentExists, err
 		}
-		return s.posts.Exists(ctx, postID)
-	case domain.NotificationTypePostCommented, domain.NotificationTypeCommentLiked, domain.NotificationTypeCommentDisliked, domain.NotificationTypeSubscribedPostCommented:
-		if notification.Payload.CommentID <= 0 && notification.EntityID <= 0 {
-			return false, nil
-		}
-		commentID := notification.Payload.CommentID
-		if commentID <= 0 {
-			commentID = notification.EntityID
-		}
-		_, err := s.comments.GetByID(ctx, commentID)
-		if err == nil {
+		postID := notificationPostID(notification)
+		if postID <= 0 {
 			return true, nil
 		}
-		if errors.Is(err, repo.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
+		return s.posts.Exists(ctx, postID)
 	default:
 		return true, nil
 	}
+}
+
+func (s *CenterService) notificationPostExists(ctx context.Context, notification domain.Notification) (bool, error) {
+	postID := notificationPostID(notification)
+	if postID <= 0 {
+		return false, nil
+	}
+	return s.posts.Exists(ctx, postID)
+}
+
+func (s *CenterService) notificationCommentExists(ctx context.Context, notification domain.Notification) (bool, error) {
+	commentID := notificationCommentID(notification)
+	if commentID <= 0 {
+		return false, nil
+	}
+	comment, err := s.comments.GetByID(ctx, commentID)
+	if err == nil {
+		if comment.DeletedAt != nil {
+			return false, nil
+		}
+		return true, nil
+	}
+	if errors.Is(err, repo.ErrNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
+func notificationPostID(notification domain.Notification) int64 {
+	if notification.Payload.PostID > 0 {
+		return notification.Payload.PostID
+	}
+	if notification.SecondaryEntityType == domain.NotificationEntityTypePost && notification.SecondaryEntityID > 0 {
+		return notification.SecondaryEntityID
+	}
+	if notification.EntityType == domain.NotificationEntityTypePost && notification.EntityID > 0 {
+		return notification.EntityID
+	}
+	return 0
+}
+
+func notificationCommentID(notification domain.Notification) int64 {
+	if notification.Payload.CommentID > 0 {
+		return notification.Payload.CommentID
+	}
+	if notification.EntityType == domain.NotificationEntityTypeComment && notification.EntityID > 0 {
+		return notification.EntityID
+	}
+	return 0
 }
 
 func buildNotificationText(notification domain.Notification) string {
@@ -668,9 +708,18 @@ func buildUnavailableNotificationContext(notification domain.Notification) strin
 	case domain.NotificationTypeDMMessage:
 		return buildNotificationContext(notification)
 	case domain.NotificationTypePostLiked, domain.NotificationTypePostDisliked, domain.NotificationTypePostCommented, domain.NotificationTypeFollowedAuthorPublished, domain.NotificationTypeSubscribedPostCommented:
-		return "post is no longer available"
+		if title := strings.TrimSpace(notification.Payload.PostTitle); title != "" {
+			return "[deleted] " + title
+		}
+		if preview := strings.TrimSpace(notification.Payload.PostPreview); preview != "" {
+			return "[deleted] " + preview
+		}
+		return "post deleted"
 	case domain.NotificationTypeCommentLiked, domain.NotificationTypeCommentDisliked:
-		return "comment is no longer available"
+		if preview := strings.TrimSpace(notification.Payload.CommentPreview); preview != "" {
+			return "[deleted comment] " + preview
+		}
+		return "comment deleted"
 	default:
 		return "content is no longer available"
 	}

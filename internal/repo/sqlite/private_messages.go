@@ -112,7 +112,14 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
             u.id,
             u.username,
             u.display_name,
-            COALESCE(MAX(pm.created_at), 0) AS last_message_at,
+            COALESCE(last_pm.created_at, 0) AS last_message_at,
+            COALESCE(last_pm.id, 0) AS last_message_id,
+            COALESCE(last_pm.from_user_id, 0) AS last_message_from_user_id,
+            COALESCE(last_pm.body, '') AS last_message_preview,
+            CASE
+                WHEN last_pm.attachment_id IS NOT NULL THEN 1
+                ELSE 0
+            END AS last_message_has_attachment,
             COALESCE((
                 SELECT CASE
                     WHEN EXISTS (
@@ -148,14 +155,19 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
                 END
             ), 0) AS unread_count
         FROM users u
-        LEFT JOIN private_messages pm
-            ON (
-                (pm.from_user_id = ? AND pm.to_user_id = u.id)
-                OR
-                (pm.from_user_id = u.id AND pm.to_user_id = ?)
+        LEFT JOIN private_messages last_pm
+            ON last_pm.id = (
+                SELECT pm2.id
+                FROM private_messages pm2
+                WHERE (
+                        (pm2.from_user_id = ? AND pm2.to_user_id = u.id)
+                        OR
+                        (pm2.from_user_id = u.id AND pm2.to_user_id = ?)
+                      )
+                ORDER BY pm2.created_at DESC, pm2.id DESC
+                LIMIT 1
             )
         WHERE u.id <> ?
-        GROUP BY u.id, u.username, u.display_name
         ORDER BY
             last_message_at DESC,
             LOWER(CASE
@@ -176,10 +188,14 @@ func (r *PrivateMessageRepo) ListPeers(ctx context.Context, userID int64) ([]dom
 	for rows.Next() {
 		var peer domain.PrivateMessagePeer
 		var displayName sql.NullString
-		if err := rows.Scan(&peer.ID, &peer.Username, &displayName, &peer.LastMessageAt, &peer.UnreadCount); err != nil {
+		var lastMessagePreview sql.NullString
+		var lastMessageHasAttachment int
+		if err := rows.Scan(&peer.ID, &peer.Username, &displayName, &peer.LastMessageAt, &peer.LastMessageID, &peer.LastMessageFromUserID, &lastMessagePreview, &lastMessageHasAttachment, &peer.UnreadCount); err != nil {
 			return nil, err
 		}
 		peer.DisplayName = strings.TrimSpace(displayName.String)
+		peer.LastMessagePreview = strings.TrimSpace(lastMessagePreview.String)
+		peer.LastMessageHasAttachment = lastMessageHasAttachment == 1
 		peers = append(peers, peer)
 	}
 

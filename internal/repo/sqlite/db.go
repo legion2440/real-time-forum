@@ -47,6 +47,10 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureCommentDeletedAtColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureAttachmentsTable(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -163,6 +167,19 @@ func ensureCommentParentColumn(db *sql.DB) error {
 	}
 
 	_, err = db.Exec("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
+	return err
+}
+
+func ensureCommentDeletedAtColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "comments", "deleted_at")
+	if err != nil {
+		return err
+	}
+	if hasColumn {
+		return nil
+	}
+
+	_, err = db.Exec("ALTER TABLE comments ADD COLUMN deleted_at INTEGER")
 	return err
 }
 

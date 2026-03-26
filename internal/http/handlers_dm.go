@@ -25,11 +25,15 @@ type privateMessageDTO struct {
 }
 
 type privateMessagePeerDTO struct {
-	ID            string `json:"id"`
-	Username      string `json:"username"`
-	DisplayName   string `json:"displayName"`
-	LastMessageAt int64  `json:"lastMessageAt"`
-	UnreadCount   int    `json:"unreadCount"`
+	ID                       string `json:"id"`
+	Username                 string `json:"username"`
+	DisplayName              string `json:"displayName"`
+	LastMessageAt            int64  `json:"lastMessageAt"`
+	LastMessageID            string `json:"lastMessageId,omitempty"`
+	LastMessageFromUserID    string `json:"lastMessageFromUserId,omitempty"`
+	LastMessagePreview       string `json:"lastMessagePreview,omitempty"`
+	LastMessageHasAttachment bool   `json:"lastMessageHasAttachment,omitempty"`
+	UnreadCount              int    `json:"unreadCount"`
 }
 
 type markDMReadRequest struct {
@@ -56,15 +60,26 @@ func (h *Handler) handleDMPeers(w http.ResponseWriter, r *http.Request) {
 	response := make([]privateMessagePeerDTO, 0, len(peers))
 	for _, peer := range peers {
 		response = append(response, privateMessagePeerDTO{
-			ID:            strconv.FormatInt(peer.ID, 10),
-			Username:      strings.TrimSpace(peer.Username),
-			DisplayName:   strings.TrimSpace(peer.DisplayName),
-			LastMessageAt: peer.LastMessageAt,
-			UnreadCount:   peer.UnreadCount,
+			ID:                       strconv.FormatInt(peer.ID, 10),
+			Username:                 strings.TrimSpace(peer.Username),
+			DisplayName:              strings.TrimSpace(peer.DisplayName),
+			LastMessageAt:            peer.LastMessageAt,
+			LastMessageID:            formatOptionalInt64(peer.LastMessageID),
+			LastMessageFromUserID:    formatOptionalInt64(peer.LastMessageFromUserID),
+			LastMessagePreview:       strings.TrimSpace(peer.LastMessagePreview),
+			LastMessageHasAttachment: peer.LastMessageHasAttachment,
+			UnreadCount:              peer.UnreadCount,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func formatOptionalInt64(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
 }
 
 func (h *Handler) handleDMConversation(w http.ResponseWriter, r *http.Request) {

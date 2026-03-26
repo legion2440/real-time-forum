@@ -209,3 +209,46 @@ func TestPrivateMessageRepo_ListPeersIncludesUnreadCountAndMarkRead(t *testing.T
 		t.Fatalf("expected second incoming message to belong to conversation")
 	}
 }
+
+func TestPrivateMessageRepo_ListPeersIncludesLastMessageSummary(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	users := NewUserRepo(db)
+	messages := NewPrivateMessageRepo(db)
+
+	meID := mustCreateUser(t, ctx, users, "me-summary@example.com", "me_summary")
+	peerID := mustCreateUser(t, ctx, users, "peer-summary@example.com", "peer_summary")
+
+	if _, err := messages.SavePrivateMessage(ctx, peerID, meID, "older", nil, time.Unix(1700000300, 0).UTC()); err != nil {
+		t.Fatalf("save older message: %v", err)
+	}
+	last, err := messages.SavePrivateMessage(ctx, meID, peerID, "latest preview", nil, time.Unix(1700000310, 0).UTC())
+	if err != nil {
+		t.Fatalf("save latest message: %v", err)
+	}
+
+	peers, err := messages.ListPeers(ctx, meID)
+	if err != nil {
+		t.Fatalf("list peers: %v", err)
+	}
+
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].ID != peerID {
+		t.Fatalf("expected peer %d, got %+v", peerID, peers[0])
+	}
+	if peers[0].LastMessageID != last.ID {
+		t.Fatalf("expected lastMessageID=%d, got %+v", last.ID, peers[0])
+	}
+	if peers[0].LastMessageFromUserID != meID {
+		t.Fatalf("expected lastMessageFromUserID=%d, got %+v", meID, peers[0])
+	}
+	if peers[0].LastMessagePreview != "latest preview" {
+		t.Fatalf("expected latest preview body, got %+v", peers[0])
+	}
+	if peers[0].LastMessageHasAttachment {
+		t.Fatalf("expected latest message attachment flag to be false, got %+v", peers[0])
+	}
+}

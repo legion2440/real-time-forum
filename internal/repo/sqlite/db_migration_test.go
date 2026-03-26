@@ -200,6 +200,72 @@ func TestOpen_MigratesLegacyUsersTableBeforeDisplayNameIndex(t *testing.T) {
 	}
 }
 
+func TestOpen_MigratesLegacyCommentsTableDeletedAtColumn(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy-comments.db")
+
+	legacyDB, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "requires cgo to work") {
+			t.Skip("sqlite3 driver requires cgo")
+		}
+		t.Fatalf("open legacy db: %v", err)
+	}
+	t.Cleanup(func() { _ = legacyDB.Close() })
+
+	_, err = legacyDB.Exec(`
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			email TEXT NOT NULL UNIQUE,
+			username TEXT NOT NULL UNIQUE,
+			pass_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+
+		CREATE TABLE posts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+
+		CREATE TABLE comments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			post_id INTEGER NOT NULL,
+			parent_id INTEGER,
+			user_id INTEGER NOT NULL,
+			body TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+	`)
+	if err != nil {
+		if strings.Contains(err.Error(), "requires cgo to work") {
+			t.Skip("sqlite3 driver requires cgo")
+		}
+		t.Fatalf("seed legacy comments schema: %v", err)
+	}
+
+	_ = legacyDB.Close()
+
+	db, err := Open(dbPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "requires cgo to work") {
+			t.Skip("sqlite3 driver requires cgo")
+		}
+		t.Fatalf("open migrated db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hasDeletedAt, err := tableHasColumn(db, "comments", "deleted_at")
+	if err != nil {
+		t.Fatalf("check comments.deleted_at column: %v", err)
+	}
+	if !hasDeletedAt {
+		t.Fatal("expected comments.deleted_at column to be added")
+	}
+}
+
 func tableExists(db *sql.DB, tableName string) (bool, error) {
 	row := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, tableName)
 	var marker int

@@ -153,6 +153,9 @@ func (s *PostService) CreateComment(ctx context.Context, userID, postID int64, b
 		if parent.PostID != postID {
 			return nil, ErrInvalidInput
 		}
+		if isDeletedComment(parent) {
+			return nil, ErrNotFound
+		}
 		// Depth is limited to one nested level. If user replies to a reply,
 		// normalize it to the root comment instead of failing.
 		if parent.ParentID != nil {
@@ -169,6 +172,9 @@ func (s *PostService) CreateComment(ctx context.Context, userID, postID int64, b
 			}
 			if root.PostID != postID {
 				return nil, ErrInvalidInput
+			}
+			if isDeletedComment(root) {
+				return nil, ErrNotFound
 			}
 			parentID = &rootID
 		}
@@ -228,11 +234,15 @@ func (s *PostService) ReactComment(ctx context.Context, userID, commentID int64,
 		return domain.ReactionChange{}, ErrInvalidInput
 	}
 
-	if _, err := s.comments.GetByID(ctx, commentID); err != nil {
+	comment, err := s.comments.GetByID(ctx, commentID)
+	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			return domain.ReactionChange{}, ErrNotFound
 		}
 		return domain.ReactionChange{}, err
+	}
+	if isDeletedComment(comment) {
+		return domain.ReactionChange{}, ErrNotFound
 	}
 
 	change, err := s.reactions.ReactComment(ctx, commentID, userID, value, s.clock.Now())
@@ -317,6 +327,9 @@ func (s *PostService) UpdateComment(ctx context.Context, userID, commentID int64
 		}
 		return nil, err
 	}
+	if isDeletedComment(comment) {
+		return nil, ErrNotFound
+	}
 	if comment.UserID != userID {
 		return nil, ErrForbidden
 	}
@@ -346,8 +359,27 @@ func (s *PostService) DeleteComment(ctx context.Context, userID, commentID int64
 		}
 		return err
 	}
+	if isDeletedComment(comment) {
+		return ErrNotFound
+	}
 	if comment.UserID != userID {
 		return ErrForbidden
+	}
+	hasDescendants, err := s.comments.HasDescendants(ctx, commentID)
+	if err != nil {
+		return err
+	}
+	if comment.ParentID != nil || hasDescendants {
+		if err := s.comments.SoftDelete(ctx, commentID, s.clock.Now()); err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if err := s.cleanupDeletedCommentThread(ctx, comment); err != nil {
+			return err
+		}
+		return nil
 	}
 	if err := s.comments.Delete(ctx, commentID); err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
@@ -355,5 +387,93 @@ func (s *PostService) DeleteComment(ctx context.Context, userID, commentID int64
 		}
 		return err
 	}
+	if err := s.cleanupDeletedCommentAncestors(ctx, comment.ParentID); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *PostService) cleanupDeletedCommentAncestors(ctx context.Context, parentID *int64) error {
+	currentParentID := parentID
+	for currentParentID != nil && *currentParentID > 0 {
+		comment, err := s.comments.GetByID(ctx, *currentParentID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if !isDeletedComment(comment) {
+			return nil
+		}
+		hasDescendants, err := s.comments.HasDescendants(ctx, comment.ID)
+		if err != nil {
+			return err
+		}
+		if hasDescendants {
+			return nil
+		}
+		nextParentID := comment.ParentID
+		if err := s.comments.Delete(ctx, comment.ID); err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		currentParentID = nextParentID
+	}
+	return nil
+}
+
+func (s *PostService) cleanupDeletedCommentThread(ctx context.Context, comment *domain.Comment) error {
+	rootID, err := s.findThreadRootCommentID(ctx, comment)
+	if err != nil || rootID <= 0 {
+		return err
+	}
+	root, err := s.comments.GetByID(ctx, rootID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if !isDeletedComment(root) {
+		return nil
+	}
+	hasActiveComments, err := s.comments.HasActiveThreadComments(ctx, rootID)
+	if err != nil {
+		return err
+	}
+	if hasActiveComments {
+		return nil
+	}
+	if err := s.comments.Delete(ctx, rootID); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *PostService) findThreadRootCommentID(ctx context.Context, comment *domain.Comment) (int64, error) {
+	if comment == nil {
+		return 0, nil
+	}
+	current := comment
+	for current.ParentID != nil && *current.ParentID > 0 {
+		parent, err := s.comments.GetByID(ctx, *current.ParentID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return current.ID, nil
+			}
+			return 0, err
+		}
+		current = parent
+	}
+	return current.ID, nil
+}
+
+func isDeletedComment(comment *domain.Comment) bool {
+	return comment != nil && comment.DeletedAt != nil
 }

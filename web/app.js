@@ -17,6 +17,7 @@ const TYPING_SCOPE_POST = "post";
 const TYPING_STATUS_START = "start";
 const TYPING_STATUS_STOP = "stop";
 const CENTER_NOTIFICATION_BUCKETS = ["dm", "my_content", "subscriptions"];
+const CENTER_DM_PREVIEW_LIMIT = 5;
 
 const state = {
   user: null,
@@ -1142,8 +1143,9 @@ function escapeHTML(value) {
 }
 
 function formatDate(value) {
+  if (!value) return "";
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime()) || d.getUTCFullYear() <= 1) return "";
   return d.toLocaleString();
 }
 
@@ -1596,6 +1598,10 @@ function normalizeDMPeer(peer) {
   const username = normalizeUsername(peer.username);
   const displayName = String(peer.displayName || peer.display_name || "").trim();
   const lastMessageAt = Number(peer.lastMessageAt ?? peer.last_message_at ?? 0);
+  const lastMessageID = normalizeUserID(peer.lastMessageId ?? peer.last_message_id ?? "");
+  const lastMessageFromUserID = normalizeUserID(peer.lastMessageFromUserId ?? peer.last_message_from_user_id ?? "");
+  const lastMessagePreview = String(peer.lastMessagePreview ?? peer.last_message_preview ?? "").trim();
+  const lastMessageHasAttachment = Boolean(peer.lastMessageHasAttachment ?? peer.last_message_has_attachment);
   const unreadCount = Math.max(0, Math.trunc(Number(peer.unreadCount ?? peer.unread_count ?? 0) || 0));
   if (!id || !username) return null;
   return {
@@ -1603,6 +1609,10 @@ function normalizeDMPeer(peer) {
     username,
     displayName,
     lastMessageAt: Number.isFinite(lastMessageAt) && lastMessageAt > 0 ? lastMessageAt : 0,
+    lastMessageID,
+    lastMessageFromUserID,
+    lastMessagePreview,
+    lastMessageHasAttachment,
     unreadCount,
   };
 }
@@ -2049,7 +2059,22 @@ function isCurrentUserOwner(entity) {
   return Boolean(ownerID) && ownerID === getCurrentUserID();
 }
 
+function isDeletedComment(comment) {
+  return Boolean(comment && (comment.deleted_at || comment.deletedAt));
+}
+
+function getActiveCommentReply(postID) {
+  const pending = state.pendingCommentReply;
+  if (!pending || !postID) return null;
+  return String(pending.postID) === String(postID) ? pending : null;
+}
+
+function clearPendingCommentReply() {
+  state.pendingCommentReply = null;
+}
+
 function canEditComment(comment) {
+  if (isDeletedComment(comment)) return false;
   if (!isCurrentUserOwner(comment)) return false;
   const createdAt = Date.parse(comment && (comment.created_at || comment.createdAt || ""));
   if (!Number.isFinite(createdAt)) return false;
@@ -2281,37 +2306,6 @@ function bindCommentReactions() {
 }
 
 function bindCommentReplyActions() {
-  const form = document.getElementById("comment-form");
-  const parentInput = form ? form.querySelector("input[name='parent_id']") : null;
-  const replyBox = document.getElementById("reply-target-box");
-  const replyText = document.getElementById("reply-target-text");
-  const textarea = form ? form.querySelector("textarea[name='body']") : null;
-
-  const clearReply = () => {
-    if (parentInput) parentInput.value = "";
-    if (replyBox) replyBox.hidden = true;
-    if (replyText) replyText.textContent = "";
-  };
-
-  const openReply = (commentID, authorLabel) => {
-    if (!parentInput) return false;
-    const id = String(commentID || "").trim();
-    if (!id) return false;
-    parentInput.value = id;
-    if (replyText) replyText.textContent = `Replying to ${authorLabel || "comment"}`;
-    if (replyBox) replyBox.hidden = false;
-    textarea?.focus();
-    return true;
-  };
-
-  const cancelBtn = document.getElementById("cancel-reply-btn");
-  if (cancelBtn) {
-    cancelBtn.addEventListener("click", () => {
-      clearReply();
-      textarea?.focus();
-    });
-  }
-
   document.querySelectorAll("[data-action='reply-comment']").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (!state.user) {
@@ -2321,36 +2315,63 @@ function bindCommentReplyActions() {
       const id = btn.getAttribute("data-reply-comment-id");
       const author = btn.getAttribute("data-reply-author") || "comment";
       if (!id) return;
-
-      if (openReply(id, author)) return;
-
-      // If comment search is active, Add Comment is hidden. Clear search and
-      // reopen reply mode for the clicked comment after rerender.
       const activePostID = getActivePostIDFromPath();
       if (!activePostID) return;
-      const postKey = String(activePostID);
-      const activeCommentQuery = String(state.commentSearchByPost[postKey] || "").trim();
-      if (!activeCommentQuery) return;
-
       state.pendingCommentReply = {
-        postID: postKey,
+        postID: String(activePostID),
         commentID: String(id),
         author: String(author || "comment"),
+        draft: "",
       };
-      state.commentSearchByPost[postKey] = "";
       router();
     });
   });
 
-  const activePostID = getActivePostIDFromPath();
-  const pending = state.pendingCommentReply;
-  if (pending && activePostID && String(pending.postID) === String(activePostID)) {
-    if (openReply(pending.commentID, pending.author)) {
-      state.pendingCommentReply = null;
-    }
-  }
+  document.querySelectorAll("[data-action='cancel-comment-reply']").forEach((button) => {
+    button.addEventListener("click", () => {
+      clearPendingCommentReply();
+      stopLocalTyping(TYPING_SCOPE_POST, { send: true });
+      router();
+    });
+  });
+}
 
-  return { clearReply, openReply };
+function bindCommentComposeForms(postID) {
+  document.querySelectorAll("[data-comment-compose-form]").forEach((form) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!state.user) return;
+      const errorBox = form.querySelector(".comment-compose-error");
+      if (errorBox) errorBox.innerHTML = "";
+      const data = new FormData(form);
+      const parentRaw = String(data.get("parent_id") || "").trim();
+      const parentID = parentRaw ? Number(parentRaw) : null;
+      try {
+        await apiFetch(`/api/posts/${postID}/comments`, {
+          method: "POST",
+          body: JSON.stringify({
+            body: data.get("body"),
+            ...(Number.isFinite(parentID) && parentID > 0 ? { parent_id: parentID } : {}),
+          }),
+        });
+        stopLocalTyping(TYPING_SCOPE_POST, { send: true, targetID: String(postID) });
+        clearPendingCommentReply();
+        router();
+      } catch (err) {
+        if (err && err.handled) return;
+        if (errorBox) errorBox.innerHTML = renderNotice(err.message || "Failed to add comment.");
+      }
+    });
+  });
+
+  const replyTextarea = document.querySelector("[data-inline-reply-form] textarea[name='body']");
+  if (replyTextarea instanceof HTMLTextAreaElement) {
+    const value = replyTextarea.value || "";
+    requestAnimationFrame(() => {
+      replyTextarea.focus();
+      replyTextarea.setSelectionRange(value.length, value.length);
+    });
+  }
 }
 
 function bindCommentOwnerActions() {
@@ -2416,36 +2437,37 @@ function bindCommentOwnerActions() {
 }
 
 function bindCommentComposerAutosize() {
-  const textarea = document.querySelector("#comment-form textarea[name='body']");
-  if (!(textarea instanceof HTMLTextAreaElement)) return;
+  document.querySelectorAll("[data-comment-compose-form] textarea[name='body']").forEach((textarea) => {
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
 
-  const collapsedHeight = 96;
-  const expandedBaseHeight = 140;
+    const collapsedHeight = 96;
+    const expandedBaseHeight = 140;
 
-  const syncHeight = (baseHeight) => {
-    textarea.style.height = "0px";
-    const target = Math.max(baseHeight, textarea.scrollHeight);
-    textarea.style.height = `${target}px`;
-  };
+    const syncHeight = (baseHeight) => {
+      textarea.style.height = "0px";
+      const target = Math.max(baseHeight, textarea.scrollHeight);
+      textarea.style.height = `${target}px`;
+    };
 
-  const expand = () => {
-    textarea.classList.add("is-expanded");
-    syncHeight(expandedBaseHeight);
-  };
+    const expand = () => {
+      textarea.classList.add("is-expanded");
+      syncHeight(expandedBaseHeight);
+    };
 
-  const collapseIfEmpty = () => {
-    if (textarea.value.trim()) return;
-    textarea.classList.remove("is-expanded");
-    syncHeight(collapsedHeight);
-  };
+    const collapseIfEmpty = () => {
+      if (textarea.value.trim()) return;
+      textarea.classList.remove("is-expanded");
+      syncHeight(collapsedHeight);
+    };
 
-  textarea.style.height = `${collapsedHeight}px`;
-  textarea.style.overflowY = "hidden";
-  syncHeight(textarea.value.trim() ? expandedBaseHeight : collapsedHeight);
+    textarea.style.height = `${collapsedHeight}px`;
+    textarea.style.overflowY = "hidden";
+    syncHeight(textarea.value.trim() ? expandedBaseHeight : collapsedHeight);
 
-  textarea.addEventListener("focus", expand);
-  textarea.addEventListener("input", expand);
-  textarea.addEventListener("blur", collapseIfEmpty);
+    textarea.addEventListener("focus", expand);
+    textarea.addEventListener("input", expand);
+    textarea.addEventListener("blur", collapseIfEmpty);
+  });
 }
 
 async function ensureUser(force = false) {
@@ -3044,12 +3066,21 @@ function updateDMPeerActivity(message) {
       return {
         ...peer,
         lastMessageAt: nextLastMessageAt,
+        lastMessageID: normalizeUserID(message.id),
+        lastMessageFromUserID: fromID,
+        lastMessagePreview: String(message.body || "").trim(),
+        lastMessageHasAttachment: Boolean(message.attachment),
       };
     })
   );
 
   if (changed) {
     syncDMPeersPanel();
+    return;
+  }
+
+  if (state.user && state.dmPeersLoaded) {
+    void loadDMPeers(true).then(() => refreshCenterRouteIfOpen());
   }
 }
 
@@ -3141,6 +3172,11 @@ function renderNotificationSubtabs(activeBucket) {
 function renderCenterNotificationItem(item) {
   if (!item) return "";
   const meta = item.context || (item.entityAvailable ? "" : "content is no longer available");
+  const metaMarkup = meta
+    ? item.linkPath && item.entityAvailable
+      ? `<a class="center-item-body center-item-context-link" data-link href="${escapeHTML(item.linkPath)}">${escapeHTML(meta)}</a>`
+      : `<div class="center-item-body">${escapeHTML(meta)}</div>`
+    : "";
   return `
     <article class="center-item center-notification-item${item.isRead ? " is-read" : " is-unread"}">
       <div class="center-item-main">
@@ -3148,10 +3184,46 @@ function renderCenterNotificationItem(item) {
           <strong>${escapeHTML(item.text)}</strong>
           <span class="center-item-meta">${escapeHTML(formatDate(item.createdAt))}</span>
         </div>
-        ${meta ? `<div class="center-item-body">${escapeHTML(meta)}</div>` : ""}
+        ${metaMarkup}
         <div class="center-item-actions">
-          ${item.linkPath ? `<a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(item.linkPath)}">${item.entityAvailable ? "Open" : "View context"}</a>` : ""}
-          ${item.isRead ? `<span class="center-status-label">Read</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="notification-read" data-notification-id="${escapeHTML(item.id)}">Mark as read</button>`}
+          ${item.isRead ? `<span class="center-status-label" aria-label="Status: seen">Status: seen</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="notification-read" data-notification-id="${escapeHTML(item.id)}">Mark as read</button>`}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function formatCenterDMPeerPreview(peer) {
+  if (!peer) return "";
+  const body = String(peer.lastMessagePreview || "").trim();
+  const attachmentLabel = peer.lastMessageHasAttachment ? (body ? " • attachment" : "Attachment") : "";
+  if (!body) return attachmentLabel;
+  const prefix = normalizeUserID(peer.lastMessageFromUserID) === getCurrentUserID() ? "You: " : "";
+  return `${prefix}${body}${attachmentLabel}`;
+}
+
+function renderCenterDMPeerItem(peer) {
+  if (!peer) return "";
+  const label = getDMPeerLabel(peer);
+  const preview = formatCenterDMPeerPreview(peer) || "Open conversation";
+  const unreadCount = Math.max(0, Number(peer.unreadCount || 0));
+  return `
+    <article class="center-item center-notification-item${unreadCount > 0 ? " is-unread" : " is-read"}">
+      <div class="center-item-main">
+        <div class="center-item-head">
+          <a class="center-item-link" data-link href="/dm/${escapeHTML(peer.id)}">${escapeHTML(label)}</a>
+          <span class="center-item-meta">${peer.lastMessageAt > 0 ? escapeHTML(formatDate(new Date(peer.lastMessageAt * 1000).toISOString())) : ""}</span>
+        </div>
+        <a class="center-item-body center-item-context-link" data-link href="/dm/${escapeHTML(peer.id)}">${escapeHTML(preview)}</a>
+        <div class="center-item-actions">
+          ${
+            unreadCount > 0
+              ? `
+                <span class="center-status-label">${escapeHTML(`${unreadCount} unread`)}</span>
+                ${peer.lastMessageID ? `<button class="btn btn-ghost btn-compact" type="button" data-action="dm-center-read" data-dm-peer-id="${escapeHTML(peer.id)}" data-dm-last-message-id="${escapeHTML(peer.lastMessageID)}">Mark as read</button>` : ""}
+              `
+              : `<span class="center-status-label" aria-label="Status: seen">Status: seen</span>`
+          }
         </div>
       </div>
     </article>
@@ -3159,6 +3231,29 @@ function renderCenterNotificationItem(item) {
 }
 
 function renderCenterNotificationPanel(activeBucket) {
+  if (activeBucket === "dm") {
+    const allConversationPeers = sortDMPeers(state.dmPeers).filter((peer) => Number(peer && peer.lastMessageAt) > 0);
+    const peers = allConversationPeers.slice(0, CENTER_DM_PREVIEW_LIMIT);
+    const unread = getNotificationBucketUnreadCount(activeBucket);
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>DM</h2>
+            <p>${unread > 0 ? `${unread} unread` : peers.length ? "Recent conversations" : "All caught up"}</p>
+          </div>
+          <div class="center-panel-actions">
+            ${unread > 0 ? `<button class="btn btn-ghost btn-compact" type="button" data-action="notifications-read-all" data-notification-bucket="dm">Mark all as read</button>` : ""}
+          </div>
+        </div>
+        <div class="center-list">
+          ${peers.length ? peers.map(renderCenterDMPeerItem).join("") : renderEmpty("No conversations", "Your recent direct message threads will show up here.")}
+        </div>
+        ${allConversationPeers.length > CENTER_DM_PREVIEW_LIMIT ? `<div class="center-panel-footer"><a class="btn btn-ghost" data-link href="/dm">Open all chats</a></div>` : ""}
+      </section>
+    `;
+  }
+
   const bucketState = getNotificationBucketState(activeBucket);
   const items = Array.isArray(bucketState.items) ? bucketState.items : [];
   const unread = getNotificationBucketUnreadCount(activeBucket);
@@ -3215,7 +3310,7 @@ function renderActivityCommentItem(item) {
   return `
     <article class="center-item">
       <div class="center-item-head">
-        ${item.linkPath ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">Comment on ${escapeHTML(item.postTitle || "post")}</a>` : `<strong>Comment</strong>`}
+        ${item.linkPath ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">${escapeHTML(item.postTitle || "Untitled post")}</a>` : `<strong>${escapeHTML(item.postTitle || "Untitled post")}</strong>`}
         <span class="center-item-meta">${escapeHTML(formatDate(item.comment.created_at || item.comment.createdAt))}</span>
       </div>
       <div class="center-item-body">${escapeHTML(String(item.comment.body || "").trim())}</div>
@@ -3287,7 +3382,11 @@ async function centerView() {
 
   await ensureNotificationSummary();
   if (activeTab === "notifications") {
-    await loadCenterNotifications(activeBucket);
+    if (activeBucket === "dm") {
+      await loadDMPeers(true);
+    } else {
+      await loadCenterNotifications(activeBucket, { force: true });
+    }
   } else {
     await loadCenterActivity();
   }
@@ -3306,6 +3405,28 @@ async function centerView() {
 }
 
 function bindCenterActions() {
+  document.querySelectorAll("[data-action='dm-center-read']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const peerID = button.getAttribute("data-dm-peer-id");
+      const lastMessageID = button.getAttribute("data-dm-last-message-id");
+      if (!peerID || !lastMessageID) return;
+      try {
+        await markDMConversationRead(peerID, lastMessageID);
+        state.dmPeers = sortDMPeers(
+          (state.dmPeers || []).map((peer) =>
+            normalizeUserID(peer && peer.id) === normalizeUserID(peerID)
+              ? { ...peer, unreadCount: 0 }
+              : peer
+          )
+        );
+        refreshCenterRouteIfOpen();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to mark conversation as read.");
+      }
+    });
+  });
+
   document.querySelectorAll("[data-action='notification-read']").forEach((button) => {
     button.addEventListener("click", async () => {
       const notificationID = button.getAttribute("data-notification-id");
@@ -3337,6 +3458,15 @@ function bindCenterActions() {
           method: "POST",
           body: JSON.stringify({ bucket }),
         });
+        if (bucket === "dm") {
+          state.dmPeers = sortDMPeers((state.dmPeers || []).map((peer) => ({ ...peer, unreadCount: 0 })));
+          syncDMUnreadCache(
+            (state.dmPeers || []).reduce((acc, peer) => {
+              acc[peer.id] = 0;
+              return acc;
+            }, {})
+          );
+        }
         const bucketState = getNotificationBucketState(bucket);
         bucketState.items = bucketState.items.map((item) => ({ ...item, isRead: true }));
         if (response && response.summary) {
@@ -4190,14 +4320,48 @@ function getCommentParentID(comment) {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-function renderComment(comment, { isReply = false } = {}) {
+function renderCommentComposeForm({ postID, replyTarget = null, inline = false } = {}) {
+  const replyID = replyTarget ? String(replyTarget.commentID || "") : "";
+  const replyAuthor = replyTarget ? String(replyTarget.author || "comment") : "comment";
+  const isReply = Boolean(replyTarget && replyID);
+  const draft = isReply ? String(replyTarget.draft || "") : "";
+  return `
+    <form class="form-stack comment-compose-form${inline ? " is-inline-reply" : ""}" data-comment-compose-form="${escapeHTML(String(postID || ""))}"${isReply ? ` data-inline-reply-form="${escapeHTML(replyID)}"` : ""}>
+      ${
+        isReply
+          ? `
+            <div class="reply-target-box">
+              <span>Replying to ${escapeHTML(replyAuthor)}</span>
+              <button class="reply-target-cancel" type="button" data-action="cancel-comment-reply" aria-label="Cancel reply">Cancel</button>
+            </div>
+          `
+          : ""
+      }
+      <input type="hidden" name="parent_id" value="${escapeHTML(replyID)}" />
+      <label class="field">
+        <span>${isReply ? "Reply" : "Comment"}</span>
+        <textarea class="comment-compose-textarea" name="body" required ${state.user ? "" : "disabled"}>${escapeHTML(draft)}</textarea>
+      </label>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit" ${state.user ? "" : "disabled"}>${icon("send")} ${isReply ? "Post Reply" : "Post Comment"}</button>
+      </div>
+      <div class="comment-compose-error"></div>
+    </form>
+  `;
+}
+
+function renderComment(comment, { isReply = false, postID = "" } = {}) {
   const authorUsername = getAuthorUsername(comment);
   const author = getAuthorDisplay(comment);
   const isOwner = isCurrentUserOwner(comment);
-  const isEditing = normalizeUserID(comment && comment.id) === normalizeUserID(state.editingCommentID);
+  const deleted = isDeletedComment(comment);
+  const isEditing = !deleted && normalizeUserID(comment && comment.id) === normalizeUserID(state.editingCommentID);
   const editable = canEditComment(comment);
+  const commentText = deleted ? "[deleted]" : String(comment?.body || "");
+  const activeReply = getActiveCommentReply(postID || comment?.post_id || comment?.postId || "");
+  const showInlineReply = !deleted && activeReply && normalizeUserID(activeReply.commentID) === normalizeUserID(comment && comment.id);
   return `
-    <article id="comment-${escapeHTML(String(comment.id))}" class="surface comment-card${isReply ? " is-reply" : ""}">
+    <article id="comment-${escapeHTML(String(comment.id))}" class="surface comment-card${isReply ? " is-reply" : ""}${deleted ? " is-deleted" : ""}">
       <div class="author-line">
         ${avatarMarkup(author, comment.avatarUrl, "xs")}
         <div>
@@ -4219,20 +4383,35 @@ function renderComment(comment, { isReply = false } = {}) {
               </div>
             </form>
           `
-          : `<p class="comment-text">${escapeHTML(comment.body)}</p>`
+          : `<p class="comment-text">${escapeHTML(commentText)}</p>`
       }
-      <div class="action-row" data-comment="${comment.id}">
-        <button class="action-pill" type="button" data-action="like">${icon("like")} ${comment.likes || 0}</button>
-        <button class="action-pill" type="button" data-action="dislike">${icon("dislike")} ${comment.dislikes || 0}</button>
-        <button class="action-pill action-pill-reply" type="button" data-action="reply-comment" data-reply-comment-id="${comment.id}" data-reply-author="${escapeHTML(author)}">Reply</button>
-        ${isOwner ? `<button class="action-pill" type="button" data-action="edit-comment" data-edit-comment-id="${escapeHTML(String(comment.id))}" ${editable ? "" : "disabled"}>${editable ? "Edit" : "Edit expired"}</button>` : ""}
-        ${isOwner ? `<button class="action-pill" type="button" data-action="delete-comment" data-delete-comment-id="${escapeHTML(String(comment.id))}">Delete</button>` : ""}
-      </div>
+      ${
+        deleted
+          ? ""
+          : `
+            <div class="action-row" data-comment="${comment.id}">
+              <button class="action-pill" type="button" data-action="like">${icon("like")} ${comment.likes || 0}</button>
+              <button class="action-pill" type="button" data-action="dislike">${icon("dislike")} ${comment.dislikes || 0}</button>
+              <button class="action-pill action-pill-reply" type="button" data-action="reply-comment" data-reply-comment-id="${comment.id}" data-reply-author="${escapeHTML(author)}">Reply</button>
+              ${isOwner ? `<button class="action-pill" type="button" data-action="edit-comment" data-edit-comment-id="${escapeHTML(String(comment.id))}" ${editable ? "" : "disabled"}>${editable ? "Edit" : "Edit expired"}</button>` : ""}
+              ${isOwner ? `<button class="action-pill" type="button" data-action="delete-comment" data-delete-comment-id="${escapeHTML(String(comment.id))}">Delete</button>` : ""}
+            </div>
+          `
+      }
+      ${
+        showInlineReply
+          ? `
+            <div class="comment-inline-compose">
+              ${renderCommentComposeForm({ postID: postID || comment?.post_id || comment?.postId, replyTarget: activeReply, inline: true })}
+            </div>
+          `
+          : ""
+      }
     </article>
   `;
 }
 
-function renderCommentThreads(comments) {
+function renderCommentThreads(comments, { postID = "" } = {}) {
   const ordered = Array.isArray(comments) ? comments : [];
   const byID = new Map(ordered.map((c) => [Number(c.id), c]));
   const roots = [];
@@ -4270,12 +4449,12 @@ function renderCommentThreads(comments) {
       const replies = repliesByParent.get(Number(comment.id)) || [];
       return `
         <div class="comment-thread">
-          ${renderComment(comment)}
+          ${renderComment(comment, { postID })}
           ${
             replies.length
               ? `
                 <div class="comment-thread-children">
-                  ${replies.map((reply) => renderComment(reply, { isReply: true })).join("")}
+                  ${replies.map((reply) => renderComment(reply, { isReply: true, postID })).join("")}
                 </div>
               `
               : ""
@@ -4289,12 +4468,32 @@ function renderCommentThreads(comments) {
 async function postView(params) {
   await ensureUser(true);
   await ensureCategories();
-  const post = await apiFetch(`/api/posts/${params.id}`);
+  let post;
+  try {
+    post = await apiFetch(`/api/posts/${params.id}`);
+  } catch (err) {
+    if (err && err.status === 404) {
+      return {
+        html: renderLayout({
+          mode: "post",
+          hideHeading: true,
+          content: `<section class="surface error-card"><h2>Post deleted</h2><p>This post is no longer available.</p><a class="btn btn-primary" data-link href="/">Back to feed</a></section>`,
+        }),
+        onMount: bindHeaderActions,
+      };
+    }
+    throw err;
+  }
   const postIDKey = String(post.id);
   const commentQuery = String(state.commentSearchByPost[postIDKey] || "").trim();
   const commentsParams = new URLSearchParams();
   if (commentQuery) commentsParams.set("q", commentQuery);
   const comments = (await apiFetch(commentsParams.toString() ? `/api/posts/${post.id}/comments?${commentsParams.toString()}` : `/api/posts/${post.id}/comments`)) || [];
+  const replyTargetStillVisible = Array.isArray(comments) && comments.some((comment) => normalizeUserID(comment && comment.id) === normalizeUserID(state.pendingCommentReply && state.pendingCommentReply.commentID));
+  if (getActiveCommentReply(post.id) && !replyTargetStillVisible) {
+    clearPendingCommentReply();
+  }
+  const activeReply = getActiveCommentReply(post.id);
   const authorUsername = getAuthorUsername(post);
   const author = getAuthorDisplay(post);
   const categoriesMarkup = categoryTags(post.categories);
@@ -4409,7 +4608,7 @@ async function postView(params) {
     }
 
     ${
-      commentQuery
+      commentQuery || activeReply
         ? ""
         : `
           <section class="surface form-card">
@@ -4418,18 +4617,7 @@ async function postView(params) {
               <p>${state.user ? "Join the discussion." : "Login to comment."}</p>
             </div>
             ${!state.user ? renderNotice("Login to create a comment.") : ""}
-            <form id="comment-form" class="form-stack">
-              <div id="reply-target-box" class="reply-target-box" hidden>
-                <span id="reply-target-text"></span>
-                <button id="cancel-reply-btn" class="reply-target-cancel" type="button" aria-label="Cancel reply">Cancel</button>
-              </div>
-              <input type="hidden" name="parent_id" value="" />
-              <label class="field"><span>Comment</span><textarea class="comment-compose-textarea" name="body" required ${state.user ? "" : "disabled"}></textarea></label>
-              <div class="form-actions">
-                <button class="btn btn-primary" type="submit" ${state.user ? "" : "disabled"}>${icon("send")} Post Comment</button>
-              </div>
-              <div id="comment-error"></div>
-            </form>
+            ${renderCommentComposeForm({ postID: post.id })}
           </section>
         `
     }
@@ -4443,7 +4631,7 @@ async function postView(params) {
         ${renderTypingIndicator(getPostTypingLabel(post.id))}
       </div>
       <div class="comments-stack">
-        ${comments.length ? renderCommentThreads(comments) : renderEmpty("No comments yet", "Be the first to leave a comment.")}
+        ${comments.length ? renderCommentThreads(comments, { postID: post.id }) : renderEmpty("No comments yet", "Be the first to leave a comment.")}
       </div>
     </section>
   `;
@@ -4457,8 +4645,9 @@ async function postView(params) {
       bindPostReactions();
       bindCommentReactions();
       bindCommentOwnerActions();
+      bindCommentReplyActions();
       bindCommentComposerAutosize();
-      const replyUI = bindCommentReplyActions();
+      bindCommentComposeForms(post.id);
       const postEditForm = document.getElementById("post-edit-form");
       if (postEditForm) {
         postEditForm.addEventListener("submit", async (event) => {
@@ -4483,31 +4672,6 @@ async function postView(params) {
           } catch (err) {
             if (err && err.handled) return;
             if (errorBox) errorBox.innerHTML = renderNotice(err.message || "Failed to update post.");
-          }
-        });
-      }
-      const form = document.getElementById("comment-form");
-      if (form) {
-        form.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          if (!state.user) return;
-          const data = new FormData(form);
-          const parentRaw = String(data.get("parent_id") || "").trim();
-          const parentID = parentRaw ? Number(parentRaw) : null;
-          try {
-            await apiFetch(`/api/posts/${post.id}/comments`, {
-              method: "POST",
-              body: JSON.stringify({
-                body: data.get("body"),
-                ...(Number.isFinite(parentID) && parentID > 0 ? { parent_id: parentID } : {}),
-              }),
-            });
-            stopLocalTyping(TYPING_SCOPE_POST, { send: true, targetID: String(post.id) });
-            if (replyUI && replyUI.clearReply) replyUI.clearReply();
-            router();
-          } catch (err) {
-            if (err && err.handled) return;
-            document.getElementById("comment-error").innerHTML = renderNotice(err.message);
           }
         });
       }
@@ -4563,6 +4727,7 @@ async function router() {
   if (state.user && !bypassProfileSetup && maybeRedirectToProfileSetup()) return;
   const match = matchRoute(location.pathname) || { route: routes[0], params: {} };
   const activePeerID = getActiveDMPeerIDFromPath(location.pathname);
+  const activePostID = getActivePostIDFromPath(location.pathname);
   if (!activePeerID) {
     state.dmPeerID = "";
     state.dmMessages = [];
@@ -4574,9 +4739,12 @@ async function router() {
     state.dmDraftAttachment = null;
     state.dmAttachmentUploading = false;
   }
-  if (!getActivePostIDFromPath(location.pathname)) {
+  if (!activePostID) {
     state.editingCommentID = "";
     state.editingCommentDraft = "";
+    clearPendingCommentReply();
+  } else if (state.pendingCommentReply && String(state.pendingCommentReply.postID) !== String(activePostID)) {
+    clearPendingCommentReply();
   }
   if (location.pathname !== "/new") {
     state.postDraftAttachment = null;
@@ -4887,8 +5055,12 @@ document.addEventListener("input", (e) => {
     return;
   }
 
-  const commentTextarea = target.closest("#comment-form textarea[name='body']");
+  const commentTextarea = target.closest("[data-comment-compose-form] textarea[name='body']");
   if (!commentTextarea) return;
+
+  if (state.pendingCommentReply && target instanceof HTMLTextAreaElement && target.closest("[data-inline-reply-form]")) {
+    state.pendingCommentReply.draft = target.value;
+  }
 
   const postID = normalizeUserID(getActivePostIDFromPath() || "");
   if (!postID) return;
@@ -4904,7 +5076,7 @@ document.addEventListener("focusout", (e) => {
     return;
   }
 
-  if (target.closest("#comment-form textarea[name='body']")) {
+  if (target.closest("[data-comment-compose-form] textarea[name='body']")) {
     stopLocalTyping(TYPING_SCOPE_POST, { send: true });
   }
 });

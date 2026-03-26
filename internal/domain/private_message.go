@@ -14,9 +14,13 @@ type PrivateMessage struct {
 }
 
 type PrivateMessagePeer struct {
-	ID            int64
-	Username      string
-	DisplayName   string
-	LastMessageAt int64
-	UnreadCount   int
+	ID                       int64
+	Username                 string
+	DisplayName              string
+	LastMessageAt            int64
+	LastMessageID            int64
+	LastMessageFromUserID    int64
+	LastMessagePreview       string
+	LastMessageHasAttachment bool
+	UnreadCount              int
 }

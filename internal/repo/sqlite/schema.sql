@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS comments (
   user_id INTEGER NOT NULL,
   body TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  deleted_at INTEGER,
   FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
   FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE CASCADE,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
