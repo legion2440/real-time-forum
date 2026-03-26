@@ -1,4 +1,4 @@
-## forum (authentication)
+## forum (advanced features)
 
 Учебный веб-форум на Go + SQLite с SPA (1 HTML) на чистом JavaScript, без фронтенд-фреймворков и без CDN.
 Проект собран по заданию "real-time-forum": личные сообщения + real-time (WebSocket) поверх базового форума (посты/комменты). 
@@ -12,6 +12,7 @@
 - [Привязка аккаунтов и поведение при объединении](#привязка-аккаунтов-и-поведение-при-объединении)
 - [Posts and Comments](#posts-and-comments)
 - [Private Messages (DM) + real-time](#private-messages-dm--real-time)
+- [Unified center: Activity + Notifications](#unified-center-activity--notifications)
 - [Bonus (сверх задания)](#bonus-сверх-задания)
 - [Разрешённые пакеты](#разрешённые-пакеты)
 - [Быстрый старт](#быстрый-старт)
@@ -85,12 +86,63 @@ OAuth реализован через реестр провайдеров (`inte
 - Real-time доставка сообщений через WebSocket без refresh.
 - Typing in progress для DM: собеседник видит в real time, что пользователь печатает сообщение.
 
+### Unified center: Activity + Notifications
+- В приложении есть единый центр `/center`.
+- Верхний уровень:
+  - `Activity`
+  - `Notifications`
+- Внутри `Notifications` есть подвкладки:
+  - `DM`
+  - `My content`
+  - `Subscriptions`
+
+`Activity` показывает собственную активность пользователя:
+- мои посты
+- мои like/dislike
+- мои комментарии вместе с контекстом поста
+
+`Notifications` показывает входящие события:
+- новые DM
+- like/dislike моего поста
+- комментарий к моему посту
+- like/dislike моего комментария
+- новые комментарии в подписанном посте
+- новые посты у автора, на которого я подписан
+
+Дополнительно:
+- уведомления сохраняются в SQLite
+- обновляются в real time через существующий WebSocket hub
+- поддерживаются `read/unread`, `mark one as read`, `mark all as read`
+- колокольчик использует aggregate unread по unified center
+
+Подписки:
+- подписка на пост - ручная
+- автор автоматически подписан на свой пост
+- подписка на автора - ручная
+- follow автора уведомляет только о новых постах, не о комментариях
+
+Edit / Remove:
+- пользователь может редактировать только свои посты
+- пользователь может удалять только свои посты
+- пользователь может редактировать только свои комментарии
+- редактирование комментария разрешено только в течение 30 минут после создания
+- пользователь может удалять свои комментарии без этого ограничения
+
+Важно:
+- self-actions не создают уведомления
+- переключение реакции `like -> dislike` или `dislike -> like` создаёт новое уведомление под новое состояние
+ 
+
 ## Бонусы (сверх задания)
 - Профили пользователей (display name + необязательные поля first/last/age/gender).
 - Unread для DM: серверный "true" + локальный cache (localStorage) как быстрый fallback.
 - Загрузка изображений (JPEG/PNG/GIF, до 20MB) для постов и личных сообщений.
 - Кастомная 404 страница.
 - Реакции like/dislike на посты и комментарии.
+- Unified center `/center` с вкладками `Activity` и `Notifications`.
+- Подписки на посты и авторов.
+- Persisted notifications + real-time push.
+- Edit/remove своих постов и комментариев.
 
 ## Разрешённые пакеты
 - Только стандартные пакеты Go +:
@@ -197,6 +249,13 @@ go vet ./...
 go test -race -count=1 ./...
 ```
 
+Дополнительно покрыто тестами:
+- центр активности и уведомлений (center service/repo/http)
+- правила создания уведомлений и защита от self-notifications
+- правила edit/remove для постов и комментариев
+- graceful shutdown для HTTP server и WS hub
+- integration test на app lifecycle shutdown через internal/app
+
 ## База данных (SQLite)
 - Схема встроена в бинарь (embed `internal/repo/sqlite/schema.sql`) и применяется при старте.
 - База по умолчанию: `forum.db`.
@@ -250,17 +309,18 @@ curl -i http://127.0.0.1:8080/api/debug/500
 
 ```text
 real-time-forum/
-├─ cmd/server/                 # точка входа (main) для HTTP-сервера
-│  └─ main.go                  # bootstrap: зависимости, запуск HTTP + WS
+├─ cmd/server/                 # точка входа
+│  └─ main.go                  # entrypoint и обработка финальной ошибки
 ├─ internal/                   # приватный код приложения
+│  ├─ app/                     # composition root: Run(), bootstrap, lifecycle, graceful shutdown
 │  ├─ domain/                  # доменные сущности/типы
 │  ├─ http/                    # HTTP-слой: router, handlers, middleware, cookies, responses/errors
 │  ├─ oauth/                   # OAuth providers, registry, normalized external identity
 │  ├─ platform/                # утилиты: id/uuid, clock/time
-│  ├─ realtime/ws/             # WS hub + события presence/pm/typing, подписки на post view
+│  ├─ realtime/ws/             # WS hub + события presence/pm/typing/notifications + lifecycle stop/done
 │  ├─ repo/                    # слой доступа к данным (интерфейсы + реализации)
 │  │  └─ sqlite/               # SQLite: schema.sql, миграции/legacy-safe апдейты, запросы, тесты
-│  └─ service/                 # use cases: auth, posts, private messages, attachments
+│  └─ service/                 # use cases: auth, posts, private messages, attachments, center
 ├─ scripts/                    # скрипты для docker/audit
 │  ├─ audit_smoke.sh
 │  ├─ docker-run.ps1
@@ -268,7 +328,7 @@ real-time-forum/
 ├─ var/uploads/                # runtime-хранилище загруженных файлов (локально/в контейнере)
 ├─ web/                        # фронт/статика (SPA)
 │  ├─ assets/
-│  ├─ app.js
+│  ├─ app.js                   # routes/views, включая unified center
 │  ├─ index.html
 │  ├─ 404.html                 # кастомная 404 страница
 │  └─ styles.css
