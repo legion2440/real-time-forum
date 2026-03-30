@@ -11,7 +11,7 @@ import (
 	"forum/internal/service"
 )
 
-const sessionCookieName = "forum_session"
+const sessionCookieName = "__Host-forum_session"
 
 type Handler struct {
 	auth        *service.AuthService
@@ -20,6 +20,7 @@ type Handler struct {
 	center      *service.CenterService
 	attachments *service.AttachmentService
 	hub         *realtimews.Hub
+	security    *Security
 }
 
 func NewHandler(auth *service.AuthService, posts *service.PostService, services ...any) *Handler {
@@ -30,6 +31,7 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 		pmService         *service.PrivateMessageService
 		centerService     *service.CenterService
 		attachmentService *service.AttachmentService
+		security          *Security
 	)
 	for _, dependency := range services {
 		switch value := dependency.(type) {
@@ -50,10 +52,17 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 				hub = value
 				startHub = false
 			}
+		case *Security:
+			if value != nil {
+				security = value
+			}
 		}
 	}
 	if startHub {
 		go hub.Run()
+	}
+	if security == nil {
+		security = NewSecurity(SecurityOptions{})
 	}
 
 	return &Handler{
@@ -63,6 +72,7 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 		center:      centerService,
 		attachments: attachmentService,
 		hub:         hub,
+		security:    security,
 	}
 }
 
@@ -97,10 +107,10 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	})
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/api/", h.authMiddleware(apiMux))
-	rootMux.Handle("/auth/", h.authMiddleware(http.HandlerFunc(h.handleOAuthRoutes)))
-	rootMux.Handle("/ws", h.authMiddleware(http.HandlerFunc(h.handleWS)))
-	rootMux.Handle("/", spaHandler(webDir))
+	rootMux.Handle("/api/", h.globalRateLimitMiddleware(h.authMiddleware(h.authEndpointRateLimitMiddleware(h.writeActionRateLimitMiddleware(apiMux)))))
+	rootMux.Handle("/auth/", h.globalRateLimitMiddleware(h.authMiddleware(h.authEndpointRateLimitMiddleware(http.HandlerFunc(h.handleOAuthRoutes)))))
+	rootMux.Handle("/ws", h.globalRateLimitMiddleware(h.webSocketHandshakeRateLimitMiddleware(h.authMiddleware(http.HandlerFunc(h.handleWS)))))
+	rootMux.Handle("/", h.globalRateLimitMiddleware(spaHandler(webDir)))
 
 	return recoverMiddleware(rootMux)
 }

@@ -2,8 +2,11 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+
+	"forum/internal/service"
 )
 
 type registerRequest struct {
@@ -55,8 +58,16 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if loginIdentifier == "" {
 		loginIdentifier = strings.TrimSpace(req.Email)
 	}
+	if loginIdentifier == "" {
+		loginIdentifier = strings.TrimSpace(req.Username)
+	}
+	if retryAfter := h.security.localAuthRetryAfter(loginIdentifier); retryAfter > 0 {
+		writeRateLimited(w, retryAfter)
+		return
+	}
 
 	session, user, err := h.auth.Login(r.Context(), loginIdentifier, req.Username, req.Password)
+	h.trackLocalAuthAttempt(loginIdentifier, err)
 	if handleServiceError(w, err) {
 		return
 	}
@@ -103,4 +114,18 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, newMeResponse(*account.User, account.HasPassword, account.LinkedAccounts))
+}
+
+func (h *Handler) trackLocalAuthAttempt(identifier string, err error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" || h == nil || h.security == nil {
+		return
+	}
+
+	switch {
+	case err == nil:
+		h.security.resetLocalAuthFailures(identifier)
+	case errors.Is(err, service.ErrUnauthorized):
+		h.security.recordLocalAuthFailure(identifier)
+	}
 }

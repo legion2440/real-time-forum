@@ -162,20 +162,36 @@ Frontend: без React/Angular/Vue и любых библиотек/фреймв
 
 ```bash
 export CGO_ENABLED=1
+export FORUM_HTTP_ADDR=127.0.0.1:8080
+export FORUM_HTTPS_ADDR=127.0.0.1:8443
+export FORUM_BASE_URL=https://127.0.0.1:8443
+export TLS_CERT_FILE=./certs/dev-cert.pem
+export TLS_KEY_FILE=./certs/dev-key.pem
 go run ./cmd/server
 ```
 
 Открыть:
-- http://127.0.0.1:8080/
+- https://127.0.0.1:8443/
+- http://127.0.0.1:8080/ (`308 Permanent Redirect` -> HTTPS)
 
 #### Linux / WSL / macOS
 ```bash
 export CGO_ENABLED=1
+export FORUM_HTTP_ADDR=127.0.0.1:8080
+export FORUM_HTTPS_ADDR=127.0.0.1:8443
+export FORUM_BASE_URL=https://127.0.0.1:8443
+export TLS_CERT_FILE=./certs/dev-cert.pem
+export TLS_KEY_FILE=./certs/dev-key.pem
 go run ./cmd/server
 ```
 
 ### Переменные окружения
 - `FORUM_DB_PATH` - путь к SQLite файлу (по умолчанию `forum.db`).
+- `FORUM_HTTP_ADDR` - адрес HTTP redirect server (по умолчанию `127.0.0.1:8080`).
+- `FORUM_HTTPS_ADDR` - адрес основного HTTPS server (по умолчанию `127.0.0.1:8443`).
+- `FORUM_BASE_URL` - канонический public base URL приложения; должен точно совпадать с scheme/host/port, используемыми в OAuth callback URL.
+- `TLS_CERT_FILE` - путь к TLS certificate PEM.
+- `TLS_KEY_FILE` - путь к TLS private key PEM.
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URL`
@@ -190,15 +206,50 @@ go run ./cmd/server
 Пример:
 ```bash
 export FORUM_DB_PATH=./forum.db
+export FORUM_HTTP_ADDR=127.0.0.1:8080
+export FORUM_HTTPS_ADDR=127.0.0.1:8443
+export FORUM_BASE_URL=https://127.0.0.1:8443
+export TLS_CERT_FILE=./certs/dev-cert.pem
+export TLS_KEY_FILE=./certs/dev-key.pem
 ```
+
+Примечания:
+- HTTP используется только для redirect на HTTPS.
+- Основной dev/deploy switch ожидается через значения env/config, а не через изменение кода.
+- HTTPS server fail-fast на старте, если TLS certificate/key не заданы или не найдены.
+
+### Локальный HTTPS запуск (mkcert)
+Проект ожидает локальные сертификаты по умолчанию в:
+- `certs/dev-cert.pem`
+- `certs/dev-key.pem`
+
+Пример генерации через `mkcert`:
+```bash
+mkcert -cert-file certs/dev-cert.pem -key-file certs/dev-key.pem 127.0.0.1 localhost
+```
+
+После этого локальный запуск:
+```bash
+export CGO_ENABLED=1
+export FORUM_HTTP_ADDR=127.0.0.1:8080
+export FORUM_HTTPS_ADDR=127.0.0.1:8443
+export FORUM_BASE_URL=https://127.0.0.1:8443
+export TLS_CERT_FILE=./certs/dev-cert.pem
+export TLS_KEY_FILE=./certs/dev-key.pem
+go run ./cmd/server
+```
+
+Проверка:
+- `https://127.0.0.1:8443/`
+- `http://127.0.0.1:8080/` для redirect на HTTPS
 
 
 ### Локальная настройка OAuth
 1. Создайте OAuth-приложения в кабинетах разработчика Google, GitHub и при необходимости Facebook.
 2. Настройте callback URL каждого провайдера на это приложение:
-   - Google: `http://127.0.0.1:8080/auth/google/callback`
-   - GitHub: `http://127.0.0.1:8080/auth/github/callback`
-   - Facebook: `http://127.0.0.1:8080/auth/facebook/callback`
+   - Google: `https://127.0.0.1:8443/auth/google/callback`
+   - GitHub: `https://127.0.0.1:8443/auth/github/callback`
+   - Facebook: `https://127.0.0.1:8443/auth/facebook/callback`
 3. Перед `go run ./cmd/server` экспортируйте соответствующие env-переменные.
 4. Запустите сервер и используйте кнопки на страницах `Login` / `Register`:
    - `Continue with Google`
@@ -207,21 +258,27 @@ export FORUM_DB_PATH=./forum.db
 
 Примечание:
 - OAuth-провайдеры необязательны. Если env-переменные провайдера не заданы, локальная аутентификация продолжает работать, а отсутствующий провайдер просто не показывается в UI.
+- `FORUM_BASE_URL` должен точно совпадать с scheme/host/port, используемыми в OAuth callback URL.
 
 Example:
 ```bash
 export FORUM_DB_PATH=./forum.db
+export FORUM_HTTP_ADDR=127.0.0.1:8080
+export FORUM_HTTPS_ADDR=127.0.0.1:8443
+export FORUM_BASE_URL=https://127.0.0.1:8443
+export TLS_CERT_FILE=./certs/dev-cert.pem
+export TLS_KEY_FILE=./certs/dev-key.pem
 export GOOGLE_CLIENT_ID=your-google-client-id
 export GOOGLE_CLIENT_SECRET=your-google-client-secret
-export GOOGLE_REDIRECT_URL=http://127.0.0.1:8080/auth/google/callback
+export GOOGLE_REDIRECT_URL=https://127.0.0.1:8443/auth/google/callback
 
 export GITHUB_CLIENT_ID=your-github-client-id
 export GITHUB_CLIENT_SECRET=your-github-client-secret
-export GITHUB_REDIRECT_URL=http://127.0.0.1:8080/auth/github/callback
+export GITHUB_REDIRECT_URL=https://127.0.0.1:8443/auth/github/callback
 
 export FACEBOOK_CLIENT_ID=your-facebook-client-id
 export FACEBOOK_CLIENT_SECRET=your-facebook-client-secret
-export FACEBOOK_REDIRECT_URL=http://127.0.0.1:8080/auth/facebook/callback
+export FACEBOOK_REDIRECT_URL=https://127.0.0.1:8443/auth/facebook/callback
 ```
 
 ### Docker
@@ -253,7 +310,7 @@ go test -race -count=1 ./...
 - центр активности и уведомлений (center service/repo/http)
 - правила создания уведомлений и защита от self-notifications
 - правила edit/remove для постов и комментариев
-- graceful shutdown для HTTP server и WS hub
+- graceful shutdown для HTTP redirect server, HTTPS server и WS hub
 - integration test на app lifecycle shutdown через internal/app
 
 ## База данных (SQLite)
@@ -298,7 +355,7 @@ go run ./cmd/server
 
 Проверка:
 ```bash
-curl -i http://127.0.0.1:8080/api/debug/500
+curl -k -i https://127.0.0.1:8443/api/debug/500
 ```
 
 Ожидаемо: `HTTP/1.1 500 Internal Server Error` и JSON-ошибка.

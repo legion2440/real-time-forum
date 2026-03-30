@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -29,10 +30,14 @@ func TestRunWithContextGracefulShutdown(t *testing.T) {
 
 	go func() {
 		runDone <- runWithContext(ctx, runConfig{
-			dbPath:    filepath.Join(tempDir, "forum.db"),
-			addr:      "127.0.0.1:0",
-			webDir:    filepath.Join(rootDir, "web"),
-			uploadDir: filepath.Join(tempDir, "uploads"),
+			dbPath:      filepath.Join(tempDir, "forum.db"),
+			httpAddr:    "127.0.0.1:0",
+			httpsAddr:   "127.0.0.1:0",
+			baseURL:     "https://127.0.0.1:8443",
+			webDir:      filepath.Join(rootDir, "web"),
+			uploadDir:   filepath.Join(tempDir, "uploads"),
+			tlsCertFile: filepath.Join(rootDir, "certs", "dev-cert.pem"),
+			tlsKeyFile:  filepath.Join(rootDir, "certs", "dev-key.pem"),
 			onListening: func(rt *runtime, addr net.Addr) {
 				appRuntime = rt
 				listening <- addr.String()
@@ -49,7 +54,7 @@ func TestRunWithContextGracefulShutdown(t *testing.T) {
 		t.Fatal("timed out waiting for application startup")
 	}
 
-	waitForHTTPReady(t, "http://"+addr+"/")
+	waitForHTTPReady(t, "https://"+addr+"/")
 
 	shutdownStarted := time.Now()
 	cancel()
@@ -80,8 +85,13 @@ func TestRunWithContextGracefulShutdown(t *testing.T) {
 		t.Fatal("expected database to be closed after shutdown")
 	}
 
-	client := &http.Client{Timeout: 300 * time.Millisecond}
-	if resp, err := client.Get("http://" + addr + "/"); err == nil {
+	client := &http.Client{
+		Timeout: 300 * time.Millisecond,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	if resp, err := client.Get("https://" + addr + "/"); err == nil {
 		resp.Body.Close()
 		t.Fatal("expected HTTP server to stop accepting connections")
 	}
@@ -91,7 +101,12 @@ func waitForHTTPReady(t *testing.T, rawURL string) {
 	t.Helper()
 
 	deadline := time.Now().Add(5 * time.Second)
-	client := &http.Client{Timeout: 300 * time.Millisecond}
+	client := &http.Client{
+		Timeout: 300 * time.Millisecond,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(rawURL)

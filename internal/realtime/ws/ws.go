@@ -21,6 +21,9 @@ const (
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
 	maxMessageSize = 4096
+
+	inboundEventsPerMinute = 120
+	typingEventsPerMinute  = 60
 )
 
 type User struct {
@@ -87,6 +90,9 @@ type Client struct {
 	userName string
 	ready    bool
 
+	messageLimiter *perMinuteLimiter
+	typingLimiter  *perMinuteLimiter
+
 	done           chan struct{}
 	closeOnce      sync.Once
 	unregisterOnce sync.Once
@@ -123,13 +129,15 @@ func ServeWS(w http.ResponseWriter, r *http.Request, hub *Hub, pms *service.Priv
 	}
 
 	client := &Client{
-		conn:     conn,
-		send:     make(chan []byte, 8),
-		hub:      hub,
-		pms:      pms,
-		userID:   user.ID,
-		userName: strings.TrimSpace(user.Name),
-		done:     make(chan struct{}),
+		conn:           conn,
+		send:           make(chan []byte, 8),
+		hub:            hub,
+		pms:            pms,
+		userID:         user.ID,
+		userName:       strings.TrimSpace(user.Name),
+		messageLimiter: newPerMinuteLimiter(inboundEventsPerMinute),
+		typingLimiter:  newPerMinuteLimiter(typingEventsPerMinute),
+		done:           make(chan struct{}),
 	}
 
 	helloPayload, err := json.Marshal(helloMessage{
@@ -186,6 +194,10 @@ func (c *Client) handleIncomingMessage(raw []byte) {
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return
 	}
+	if !c.allowInboundEvent(envelope.Type) {
+		c.closeRateLimited()
+		return
+	}
 
 	switch envelope.Type {
 	case "pm:send":
@@ -203,6 +215,24 @@ func (c *Client) handleIncomingMessage(raw []byte) {
 	default:
 		return
 	}
+}
+
+func (c *Client) allowInboundEvent(eventType string) bool {
+	if c == nil || c.messageLimiter == nil {
+		return true
+	}
+	if !c.messageLimiter.Allow(time.Now()) {
+		return false
+	}
+	if !isLowPriorityRealtimeEvent(eventType) || c.typingLimiter == nil {
+		return true
+	}
+	return c.typingLimiter.Allow(time.Now())
+}
+
+func isLowPriorityRealtimeEvent(eventType string) bool {
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	return strings.HasPrefix(eventType, "typing:") || strings.HasPrefix(eventType, "presence:")
 }
 
 func (c *Client) handlePrivateMessageSend(raw []byte) {
@@ -352,6 +382,18 @@ func (c *Client) close() {
 	})
 }
 
+func (c *Client) closeRateLimited() {
+	if c == nil || c.conn == nil {
+		return
+	}
+	_ = c.conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limited"),
+		time.Now().Add(writeWait),
+	)
+	c.close()
+}
+
 func (c *Client) unregister() {
 	c.unregisterOnce.Do(func() {
 		if c.hub == nil {
@@ -396,4 +438,32 @@ func newPrivateMessageMediaRef(attachment *domain.Attachment) *privateMessageMed
 		Mime: strings.TrimSpace(attachment.Mime),
 		Size: attachment.Size,
 	}
+}
+
+type perMinuteLimiter struct {
+	limit       int
+	windowStart time.Time
+	count       int
+}
+
+func newPerMinuteLimiter(limit int) *perMinuteLimiter {
+	return &perMinuteLimiter{limit: limit}
+}
+
+func (l *perMinuteLimiter) Allow(now time.Time) bool {
+	if l == nil || l.limit <= 0 {
+		return true
+	}
+
+	if l.windowStart.IsZero() || now.Sub(l.windowStart) >= time.Minute {
+		l.windowStart = now
+		l.count = 0
+	}
+
+	if l.count >= l.limit {
+		return false
+	}
+
+	l.count++
+	return true
 }

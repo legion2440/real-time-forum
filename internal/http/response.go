@@ -3,6 +3,8 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 type errorResponse struct {
@@ -44,4 +46,17 @@ func writeAuthUnauthorized(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusUnauthorized, "unauthorized")
+}
+
+func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	retryAfterSeconds := int(retryAfter / time.Second)
+	if retryAfter%time.Second != 0 {
+		retryAfterSeconds++
+	}
+	if retryAfterSeconds <= 0 {
+		retryAfterSeconds = 1
+	}
+
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	writeErrorMessage(w, http.StatusTooManyRequests, "too_many_requests", "Rate limit exceeded.")
 }

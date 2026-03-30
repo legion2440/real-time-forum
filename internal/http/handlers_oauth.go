@@ -147,8 +147,13 @@ func (h *Handler) handleAuthFlowConfirmLocal(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid input")
 		return
 	}
+	if retryAfter := h.security.localAuthRetryAfter(req.Login); retryAfter > 0 {
+		writeRateLimited(w, retryAfter)
+		return
+	}
 
 	result, err := h.auth.ConfirmLinkFlowWithLocal(r.Context(), token, req.Login, req.Password)
+	h.trackLocalAuthAttempt(req.Login, err)
 	if handleServiceError(w, err) {
 		return
 	}
@@ -235,8 +240,13 @@ func (h *Handler) handleLocalMerge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid input")
 		return
 	}
+	if retryAfter := h.security.localAuthRetryAfter(req.Login); retryAfter > 0 {
+		writeRateLimited(w, retryAfter)
+		return
+	}
 
 	token, err := h.auth.StartLocalAccountMerge(r.Context(), currentUserID, req.Login, req.Password)
+	h.trackLocalAuthAttempt(req.Login, err)
 	if handleServiceError(w, err) {
 		return
 	}

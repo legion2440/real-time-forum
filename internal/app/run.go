@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -26,23 +28,33 @@ import (
 
 const (
 	defaultDBPath          = "forum.db"
-	defaultAddr            = ":8080"
+	defaultHTTPAddr        = "127.0.0.1:8080"
+	defaultHTTPSAddr       = "127.0.0.1:8443"
+	defaultBaseURL         = "https://127.0.0.1:8443"
+	defaultTLSCertFile     = "./certs/dev-cert.pem"
+	defaultTLSKeyFile      = "./certs/dev-key.pem"
 	defaultWebDir          = "web"
 	defaultUpload          = "var/uploads"
 	defaultShutdownTimeout = 10 * time.Second
 )
 
 type runtime struct {
-	db     *sql.DB
-	server *http.Server
-	hub    *realtimews.Hub
+	db          *sql.DB
+	httpServer  *http.Server
+	httpsServer *http.Server
+	hub         *realtimews.Hub
+	security    *httpserver.Security
 }
 
 type runConfig struct {
 	dbPath      string
-	addr        string
+	httpAddr    string
+	httpsAddr   string
+	baseURL     string
 	webDir      string
 	uploadDir   string
+	tlsCertFile string
+	tlsKeyFile  string
 	onListening func(*runtime, net.Addr)
 }
 
@@ -70,6 +82,11 @@ type services struct {
 	hub             *realtimews.Hub
 }
 
+type serverResult struct {
+	name string
+	err  error
+}
+
 func Run() error {
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -86,42 +103,100 @@ func runWithContext(signalCtx context.Context, cfg runConfig, stopSignals func()
 	}
 	defer runtime.close()
 
-	listener, err := net.Listen("tcp", cfg.addr)
+	httpsListener, err := net.Listen("tcp", cfg.httpsAddr)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return fmt.Errorf("https listen: %w", err)
 	}
-	runtime.server.Addr = listener.Addr().String()
+	runtime.httpsServer.Addr = httpsListener.Addr().String()
 
-	serverErr := make(chan error, 1)
-	go func() {
-		log.Printf("server listening on %s", runtime.server.Addr)
-		if err := runtime.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- fmt.Errorf("server error: %w", err)
-			return
-		}
-		serverErr <- nil
-	}()
+	baseURL, err := resolveBaseURL(cfg.baseURL, httpsListener.Addr())
+	if err != nil {
+		_ = httpsListener.Close()
+		return err
+	}
+
+	runtime.httpServer = buildHTTPRedirectServer(cfg.httpAddr, baseURL)
+	httpListener, err := net.Listen("tcp", cfg.httpAddr)
+	if err != nil {
+		_ = httpsListener.Close()
+		return fmt.Errorf("http listen: %w", err)
+	}
+	runtime.httpServer.Addr = httpListener.Addr().String()
+
+	serverErrs := make(chan serverResult, 2)
+	go serveServer("http redirect", func() error {
+		log.Printf("http redirect listening on %s", runtime.httpServer.Addr)
+		return runtime.httpServer.Serve(httpListener)
+	}, serverErrs)
+	go serveServer("https", func() error {
+		log.Printf("https server listening on %s", runtime.httpsServer.Addr)
+		return runtime.httpsServer.Serve(tls.NewListener(httpsListener, runtime.httpsServer.TLSConfig))
+	}, serverErrs)
 
 	if cfg.onListening != nil {
-		cfg.onListening(runtime, listener.Addr())
+		cfg.onListening(runtime, httpsListener.Addr())
 	}
 
-	select {
-	case err := <-serverErr:
-		return err
-	case <-signalCtx.Done():
-		if stopSignals != nil {
-			stopSignals()
-		}
+	shutdownStarted := false
+	var shutdownErr error
+	pendingServers := 2
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
-		defer cancel()
+	for pendingServers > 0 {
+		select {
+		case result := <-serverErrs:
+			pendingServers--
 
-		if err := runtime.shutdown(shutdownCtx); err != nil {
-			return err
+			if result.err == nil && !shutdownStarted {
+				result.err = fmt.Errorf("%s server stopped unexpectedly", result.name)
+			}
+			if result.err != nil {
+				if !shutdownStarted {
+					if stopSignals != nil {
+						stopSignals()
+					}
+					shutdownStarted = true
+					shutdownCtx, cancel := newShutdownContext()
+					shutdownErr = runtime.shutdown(shutdownCtx)
+					cancel()
+				}
+				if shutdownErr != nil {
+					return shutdownErr
+				}
+				return result.err
+			}
+
+			if pendingServers == 0 {
+				return shutdownErr
+			}
+		case <-signalCtx.Done():
+			if shutdownStarted {
+				continue
+			}
+			if stopSignals != nil {
+				stopSignals()
+			}
+
+			shutdownStarted = true
+			shutdownCtx, cancel := newShutdownContext()
+			shutdownErr = runtime.shutdown(shutdownCtx)
+			cancel()
 		}
-		return <-serverErr
 	}
+
+	return shutdownErr
+}
+
+func newShutdownContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), defaultShutdownTimeout)
+}
+
+func serveServer(name string, serve func() error, results chan<- serverResult) {
+	err := serve()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		results <- serverResult{name: name, err: fmt.Errorf("%s server error: %w", name, err)}
+		return
+	}
+	results <- serverResult{name: name}
 }
 
 func (cfg runConfig) withDefaults() runConfig {
@@ -131,8 +206,20 @@ func (cfg runConfig) withDefaults() runConfig {
 			cfg.dbPath = defaultDBPath
 		}
 	}
-	if strings.TrimSpace(cfg.addr) == "" {
-		cfg.addr = defaultAddr
+	if strings.TrimSpace(cfg.httpAddr) == "" {
+		cfg.httpAddr = getenvOrDefault("FORUM_HTTP_ADDR", defaultHTTPAddr)
+	}
+	if strings.TrimSpace(cfg.httpsAddr) == "" {
+		cfg.httpsAddr = getenvOrDefault("FORUM_HTTPS_ADDR", defaultHTTPSAddr)
+	}
+	if strings.TrimSpace(cfg.baseURL) == "" {
+		cfg.baseURL = getenvOrDefault("FORUM_BASE_URL", defaultBaseURL)
+	}
+	if strings.TrimSpace(cfg.tlsCertFile) == "" {
+		cfg.tlsCertFile = getenvOrDefault("TLS_CERT_FILE", defaultTLSCertFile)
+	}
+	if strings.TrimSpace(cfg.tlsKeyFile) == "" {
+		cfg.tlsKeyFile = getenvOrDefault("TLS_KEY_FILE", defaultTLSKeyFile)
 	}
 	if strings.TrimSpace(cfg.webDir) == "" {
 		cfg.webDir = defaultWebDir
@@ -141,6 +228,14 @@ func (cfg runConfig) withDefaults() runConfig {
 		cfg.uploadDir = defaultUpload
 	}
 	return cfg
+}
+
+func getenvOrDefault(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func bootstrap(cfg runConfig) (*runtime, error) {
@@ -156,10 +251,19 @@ func bootstrap(cfg runConfig) (*runtime, error) {
 		return nil, err
 	}
 
+	security := httpserver.NewSecurity(httpserver.SecurityOptions{StartCleanup: true})
+	httpsServer, err := buildHTTPSServer(services, cfg.httpsAddr, cfg.webDir, cfg.tlsCertFile, cfg.tlsKeyFile, security)
+	if err != nil {
+		security.Close()
+		_ = db.Close()
+		return nil, err
+	}
+
 	return &runtime{
-		db:     db,
-		server: buildServer(services, cfg.addr, cfg.webDir),
-		hub:    services.hub,
+		db:          db,
+		httpsServer: httpsServer,
+		hub:         services.hub,
+		security:    security,
 	}, nil
 }
 
@@ -226,7 +330,12 @@ func buildServices(repos repositories, uploadDir string) (services, error) {
 	}, nil
 }
 
-func buildServer(services services, addr, webDir string) *http.Server {
+func buildHTTPSServer(services services, addr, webDir, certFile, keyFile string, security *httpserver.Security) (*http.Server, error) {
+	tlsConfig, err := buildTLSConfig(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+
 	handler := httpserver.NewHandler(
 		services.auth,
 		services.posts,
@@ -234,12 +343,113 @@ func buildServer(services services, addr, webDir string) *http.Server {
 		services.center,
 		services.attachments,
 		services.hub,
+		security,
 	)
 
 	return &http.Server{
+		Addr:              addr,
+		Handler:           handler.Routes(webDir),
+		TLSConfig:         tlsConfig,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}, nil
+}
+
+func buildHTTPRedirectServer(addr string, baseURL *url.URL) *http.Server {
+	return &http.Server{
 		Addr:    addr,
-		Handler: handler.Routes(webDir),
+		Handler: http.HandlerFunc(httpsRedirectHandler(baseURL)),
 	}
+}
+
+func httpsRedirectHandler(baseURL *url.URL) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, buildHTTPSRedirectLocation(baseURL, r), http.StatusPermanentRedirect)
+	}
+}
+
+func buildHTTPSRedirectLocation(baseURL *url.URL, r *http.Request) string {
+	target := *baseURL
+	target.Path = joinURLPath(strings.TrimRight(baseURL.Path, "/"), r.URL.EscapedPath())
+	target.RawPath = target.Path
+	target.RawQuery = r.URL.RawQuery
+	return target.String()
+}
+
+func joinURLPath(basePath, requestPath string) string {
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if !strings.HasPrefix(requestPath, "/") {
+		requestPath = "/" + requestPath
+	}
+	if basePath == "" || basePath == "/" {
+		return requestPath
+	}
+	return strings.TrimRight(basePath, "/") + requestPath
+}
+
+func buildTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+	certFile = strings.TrimSpace(certFile)
+	keyFile = strings.TrimSpace(keyFile)
+	if certFile == "" {
+		return nil, errors.New("TLS_CERT_FILE is required")
+	}
+	if keyFile == "" {
+		return nil, errors.New("TLS_KEY_FILE is required")
+	}
+	if _, err := os.Stat(certFile); err != nil {
+		return nil, fmt.Errorf("tls cert file %q: %w", certFile, err)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		return nil, fmt.Errorf("tls key file %q: %w", keyFile, err)
+	}
+
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load tls key pair: %w", err)
+	}
+
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		Certificates: []tls.Certificate{
+			certificate,
+		},
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		},
+		NextProtos: []string{"h2", "http/1.1"},
+	}, nil
+}
+
+func resolveBaseURL(rawBaseURL string, httpsAddr net.Addr) (*url.URL, error) {
+	rawBaseURL = strings.TrimSpace(rawBaseURL)
+	if rawBaseURL == "" {
+		rawBaseURL = "https://" + httpsAddr.String()
+	}
+
+	baseURL, err := url.Parse(rawBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse FORUM_BASE_URL: %w", err)
+	}
+	if !strings.EqualFold(baseURL.Scheme, "https") {
+		return nil, errors.New("FORUM_BASE_URL must use https")
+	}
+	if strings.TrimSpace(baseURL.Host) == "" {
+		return nil, errors.New("FORUM_BASE_URL must include host")
+	}
+	baseURL.RawQuery = ""
+	baseURL.Fragment = ""
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
+	return baseURL, nil
 }
 
 func loadOAuthRegistry() *oauth.Registry {
@@ -277,16 +487,31 @@ func (r *runtime) shutdown(ctx context.Context) error {
 		return nil
 	}
 
+	var shutdownErr error
+	if r.httpServer != nil {
+		shutdownErr = errors.Join(shutdownErr, shutdownHTTPServer(ctx, "http redirect", r.httpServer))
+	}
+	if r.httpsServer != nil {
+		shutdownErr = errors.Join(shutdownErr, shutdownHTTPServer(ctx, "https", r.httpsServer))
+	}
 	if r.hub != nil {
 		r.hub.Stop()
 	}
-	if r.server != nil {
-		if err := r.server.Shutdown(ctx); err != nil {
-			return fmt.Errorf("server shutdown: %w", err)
-		}
-	}
 	if err := waitForHubShutdown(ctx, r.hub); err != nil {
-		return fmt.Errorf("realtime shutdown: %w", err)
+		shutdownErr = errors.Join(shutdownErr, fmt.Errorf("realtime shutdown: %w", err))
+	}
+	if r.security != nil {
+		r.security.Close()
+	}
+	return shutdownErr
+}
+
+func shutdownHTTPServer(ctx context.Context, name string, server *http.Server) error {
+	if server == nil {
+		return nil
+	}
+	if err := server.Shutdown(ctx); err != nil {
+		return fmt.Errorf("%s server shutdown: %w", name, err)
 	}
 	return nil
 }
@@ -310,8 +535,13 @@ func waitForHubShutdown(ctx context.Context, hub *realtimews.Hub) error {
 }
 
 func (r *runtime) close() {
-	if r == nil || r.db == nil {
+	if r == nil {
 		return
 	}
-	_ = r.db.Close()
+	if r.security != nil {
+		r.security.Close()
+	}
+	if r.db != nil {
+		_ = r.db.Close()
+	}
 }

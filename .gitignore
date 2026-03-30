@@ -11,3 +11,5 @@ forum.db
 # editor/OS
 .DS_Store
 Thumbs.db
+certs/*.pem
+certs/*.pem
