@@ -1,4 +1,4 @@
-## forum (advanced features)
+## forum (security)
 
 Учебный веб-форум на Go + SQLite с SPA (1 HTML) на чистом JavaScript, без фронтенд-фреймворков и без CDN.
 Проект собран по заданию "real-time-forum": личные сообщения + real-time (WebSocket) поверх базового форума (посты/комменты). 
@@ -219,14 +219,24 @@ export TLS_KEY_FILE=./certs/dev-key.pem
 - HTTPS server fail-fast на старте, если TLS certificate/key не заданы или не найдены.
 
 ### Локальный HTTPS запуск (mkcert)
-Проект ожидает локальные сертификаты по умолчанию в:
+
+Для локального HTTPS должен быть установлен `mkcert`.
+
+Проект по умолчанию ожидает сертификаты в:
 - `certs/dev-cert.pem`
 - `certs/dev-key.pem`
 
-Пример генерации через `mkcert`:
+1. Установите `mkcert`
+2. Один раз инициализируйте локальный CA:
 ```bash
-mkcert -cert-file certs/dev-cert.pem -key-file certs/dev-key.pem 127.0.0.1 localhost
+mkcert -install
+
+3. Сгенерируйте локальные сертификаты:
+```bash
+mkcert -cert-file certs/dev-cert.pem -key-file certs/dev-key.pem 127.0.0.1 localhost ::1
 ```
+
+Если `mkcert` не установлен, сначала установите его и только потом выполняйте команды выше.
 
 После этого локальный запуск:
 ```bash
@@ -396,7 +406,7 @@ real-time-forum/
 
 ## Авторы
 - Nazar Yestayev (@nyestaye / @legion2440)
-- Maxat Shaimardinov (@mshaimard)
-- Asset Mussabekov (@amussabe)
-- Kamshat Berdiyeva (@komarbek)
+- Aibar Ramazan (@mmurnau)
+- Magzhan Tastan (@mtastan)
+- Talgat Tokayev (@tatokayev)
 - Zhomart Utemissov (@zutemiss)

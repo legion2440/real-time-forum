@@ -12,4 +12,6 @@ forum.db
 .DS_Store
 Thumbs.db
 certs/*.pem
-certs/*.pem
+
+# local env
+.env

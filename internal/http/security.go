@@ -25,6 +25,7 @@ type SecurityOptions struct {
 	StartCleanup       bool
 	CleanupInterval    time.Duration
 	StaleAfter         time.Duration
+	LoginWindow        time.Duration
 	GlobalHTTP         RateLimitConfig
 	AuthEndpoints      RateLimitConfig
 	WriteActions       RateLimitConfig
@@ -59,7 +60,7 @@ func NewSecurity(opts SecurityOptions) *Security {
 		authEndpoints:    newTokenBucketStore(opts.Now, opts.AuthEndpoints, opts.StaleAfter),
 		writeActions:     newTokenBucketStore(opts.Now, opts.WriteActions, opts.StaleAfter),
 		wsHandshake:      newTokenBucketStore(opts.Now, opts.WebSocketHandshake, opts.StaleAfter),
-		loginThrottler:   newLoginThrottler(opts.Now, opts.LoginBackoff, opts.MaxLoginBackoff, opts.StaleAfter),
+		loginThrottler:   newLoginThrottler(opts.Now, opts.LoginBackoff, opts.MaxLoginBackoff, opts.LoginWindow, opts.StaleAfter),
 	}
 
 	if opts.StartCleanup {
@@ -215,6 +216,9 @@ func (opts SecurityOptions) withDefaults() SecurityOptions {
 	if opts.StaleAfter <= 0 {
 		opts.StaleAfter = 15 * time.Minute
 	}
+	if opts.LoginWindow <= 0 {
+		opts.LoginWindow = 15 * time.Minute
+	}
 	opts.GlobalHTTP = withDefaultRateLimit(opts.GlobalHTTP, 300, time.Minute, 60)
 	opts.AuthEndpoints = withDefaultRateLimit(opts.AuthEndpoints, 10, time.Minute, 5)
 	opts.WriteActions = withDefaultRateLimit(opts.WriteActions, 30, time.Minute, 10)
@@ -226,12 +230,11 @@ func (opts SecurityOptions) withDefaults() SecurityOptions {
 			4 * time.Second,
 			8 * time.Second,
 			16 * time.Second,
-			32 * time.Second,
-			60 * time.Second,
+			30 * time.Second,
 		}
 	}
 	if opts.MaxLoginBackoff <= 0 {
-		opts.MaxLoginBackoff = 60 * time.Second
+		opts.MaxLoginBackoff = 30 * time.Second
 	}
 	return opts
 }
@@ -397,17 +400,18 @@ type loginThrottler struct {
 	now         func() time.Time
 	backoff     []time.Duration
 	maxBackoff  time.Duration
+	window      time.Duration
 	staleAfter  time.Duration
 	identifiers map[string]*loginThrottleState
 }
 
 type loginThrottleState struct {
-	failures     int
+	failures     []time.Time
 	blockedUntil time.Time
 	lastSeen     time.Time
 }
 
-func newLoginThrottler(now func() time.Time, backoff []time.Duration, maxBackoff, staleAfter time.Duration) *loginThrottler {
+func newLoginThrottler(now func() time.Time, backoff []time.Duration, maxBackoff, window, staleAfter time.Duration) *loginThrottler {
 	if now == nil {
 		now = time.Now
 	}
@@ -415,6 +419,7 @@ func newLoginThrottler(now func() time.Time, backoff []time.Duration, maxBackoff
 		now:         now,
 		backoff:     append([]time.Duration(nil), backoff...),
 		maxBackoff:  maxBackoff,
+		window:      window,
 		staleAfter:  staleAfter,
 		identifiers: make(map[string]*loginThrottleState),
 	}
@@ -435,6 +440,7 @@ func (t *loginThrottler) wait(identifier string) time.Duration {
 	if !ok || state == nil {
 		return 0
 	}
+	t.pruneFailuresLocked(state, now)
 
 	state.lastSeen = now
 	if !now.Before(state.blockedUntil) {
@@ -460,9 +466,14 @@ func (t *loginThrottler) failure(identifier string) time.Duration {
 		t.identifiers[identifier] = state
 	}
 
-	state.failures++
-	delay := t.delayForFailures(state.failures)
-	state.blockedUntil = now.Add(delay)
+	t.pruneFailuresLocked(state, now)
+	state.failures = append(state.failures, now)
+	delay := t.delayForFailures(len(state.failures))
+	if delay > 0 {
+		state.blockedUntil = now.Add(delay)
+	} else {
+		state.blockedUntil = time.Time{}
+	}
 	state.lastSeen = now
 	return delay
 }
@@ -493,18 +504,19 @@ func (t *loginThrottler) cleanup() {
 			delete(t.identifiers, identifier)
 			continue
 		}
-		if now.Sub(state.lastSeen) >= t.staleAfter {
+		t.pruneFailuresLocked(state, now)
+		if now.Sub(state.lastSeen) >= t.staleAfter || (len(state.failures) == 0 && !now.Before(state.blockedUntil)) {
 			delete(t.identifiers, identifier)
 		}
 	}
 }
 
 func (t *loginThrottler) delayForFailures(failures int) time.Duration {
-	if failures <= 0 {
+	if failures <= 4 {
 		return 0
 	}
 
-	index := failures - 1
+	index := failures - 5
 	if index >= len(t.backoff) {
 		index = len(t.backoff) - 1
 	}
@@ -517,4 +529,19 @@ func (t *loginThrottler) delayForFailures(failures int) time.Duration {
 		return t.maxBackoff
 	}
 	return delay
+}
+
+func (t *loginThrottler) pruneFailuresLocked(state *loginThrottleState, now time.Time) {
+	if t == nil || state == nil || len(state.failures) == 0 || t.window <= 0 {
+		return
+	}
+
+	keepFrom := 0
+	for keepFrom < len(state.failures) && now.Sub(state.failures[keepFrom]) > t.window {
+		keepFrom++
+	}
+	if keepFrom == 0 {
+		return
+	}
+	state.failures = append([]time.Time(nil), state.failures[keepFrom:]...)
 }

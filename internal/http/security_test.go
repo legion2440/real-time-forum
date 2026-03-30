@@ -121,7 +121,64 @@ func TestAuthRateLimiterReturnsTooManyRequests(t *testing.T) {
 	}
 }
 
-func TestFailedLoginThrottlingBackoffAndReset(t *testing.T) {
+func TestLoginThrottlerFirstFourFailuresHaveNoDelay(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	throttler := newLoginThrottler(
+		func() time.Time { return now },
+		[]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second},
+		30*time.Second,
+		15*time.Minute,
+		15*time.Minute,
+	)
+
+	for attempt := 1; attempt <= 4; attempt++ {
+		delay := throttler.failure("demo@example.com")
+		if delay != 0 {
+			t.Fatalf("expected no delay for failure %d, got %v", attempt, delay)
+		}
+		if wait := throttler.wait("demo@example.com"); wait != 0 {
+			t.Fatalf("expected no wait after failure %d, got %v", attempt, wait)
+		}
+	}
+
+	if delay := throttler.failure("demo@example.com"); delay != time.Second {
+		t.Fatalf("expected fifth failure delay %v, got %v", time.Second, delay)
+	}
+}
+
+func TestLoginThrottlerBackoffGrowthAndCap(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	throttler := newLoginThrottler(
+		func() time.Time { return now },
+		[]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second},
+		30*time.Second,
+		15*time.Minute,
+		15*time.Minute,
+	)
+
+	expected := []time.Duration{
+		0,
+		0,
+		0,
+		0,
+		1 * time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		16 * time.Second,
+		30 * time.Second,
+		30 * time.Second,
+	}
+
+	for attempt, want := range expected {
+		got := throttler.failure("demo@example.com")
+		if got != want {
+			t.Fatalf("failure %d: expected delay %v, got %v", attempt+1, want, got)
+		}
+	}
+}
+
+func TestFailedLoginThrottlingMessageAndReset(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	security := NewSecurity(SecurityOptions{
 		Now: func() time.Time { return now },
@@ -141,42 +198,36 @@ func TestFailedLoginThrottlingBackoffAndReset(t *testing.T) {
 		return rec
 	}
 
-	rec1 := login("wrong")
-	if rec1.Code != http.StatusUnauthorized {
-		t.Fatalf("expected first failed login to be unauthorized, got %d", rec1.Code)
+	for attempt := 1; attempt <= 5; attempt++ {
+		rec := login("wrong")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected failed login %d to be unauthorized, got %d", attempt, rec.Code)
+		}
 	}
 
-	rec2 := login("wrong")
-	if rec2.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected immediate retry to be rate limited, got %d", rec2.Code)
+	throttled := login("wrong")
+	if throttled.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected throttled login to return 429, got %d", throttled.Code)
 	}
-	if rec2.Header().Get("Retry-After") != "1" {
-		t.Fatalf("expected Retry-After=1, got %q", rec2.Header().Get("Retry-After"))
+	if throttled.Header().Get("Retry-After") != "1" {
+		t.Fatalf("expected Retry-After=1, got %q", throttled.Header().Get("Retry-After"))
+	}
+	if !strings.Contains(throttled.Body.String(), "Too many failed login attempts.") {
+		t.Fatalf("expected specific throttling message, got %q", throttled.Body.String())
+	}
+	if strings.Contains(throttled.Body.String(), "Rate limit exceeded.") {
+		t.Fatalf("expected specific throttling message instead of generic rate limit text, got %q", throttled.Body.String())
 	}
 
 	now = now.Add(1 * time.Second)
-	rec3 := login("wrong")
-	if rec3.Code != http.StatusUnauthorized {
-		t.Fatalf("expected second failed attempt after delay to be unauthorized, got %d", rec3.Code)
+	success := login("secret")
+	if success.Code != http.StatusOK {
+		t.Fatalf("expected successful login to reset throttle, got %d body=%q", success.Code, success.Body.String())
 	}
 
-	rec4 := login("wrong")
-	if rec4.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected second immediate retry to be rate limited, got %d", rec4.Code)
-	}
-	if rec4.Header().Get("Retry-After") != "2" {
-		t.Fatalf("expected Retry-After=2, got %q", rec4.Header().Get("Retry-After"))
-	}
-
-	now = now.Add(2 * time.Second)
-	rec5 := login("secret")
-	if rec5.Code != http.StatusOK {
-		t.Fatalf("expected successful login to reset throttle, got %d body=%q", rec5.Code, rec5.Body.String())
-	}
-
-	rec6 := login("wrong")
-	if rec6.Code != http.StatusUnauthorized {
-		t.Fatalf("expected throttle to reset after success, got %d", rec6.Code)
+	afterReset := login("wrong")
+	if afterReset.Code != http.StatusUnauthorized {
+		t.Fatalf("expected throttle to reset after success, got %d", afterReset.Code)
 	}
 }
 

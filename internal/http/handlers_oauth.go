@@ -148,7 +148,7 @@ func (h *Handler) handleAuthFlowConfirmLocal(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if retryAfter := h.security.localAuthRetryAfter(req.Login); retryAfter > 0 {
-		writeRateLimited(w, retryAfter)
+		writeFailedLoginThrottled(w, retryAfter)
 		return
 	}
 
@@ -241,7 +241,7 @@ func (h *Handler) handleLocalMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if retryAfter := h.security.localAuthRetryAfter(req.Login); retryAfter > 0 {
-		writeRateLimited(w, retryAfter)
+		writeFailedLoginThrottled(w, retryAfter)
 		return
 	}
 

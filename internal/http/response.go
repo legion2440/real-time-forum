@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -49,6 +50,23 @@ func writeAuthUnauthorized(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
+	retryAfterSeconds := retryAfterSeconds(retryAfter)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	writeErrorMessage(w, http.StatusTooManyRequests, "too_many_requests", "Rate limit exceeded.")
+}
+
+func writeFailedLoginThrottled(w http.ResponseWriter, retryAfter time.Duration) {
+	retryAfterSeconds := retryAfterSeconds(retryAfter)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	writeErrorMessage(
+		w,
+		http.StatusTooManyRequests,
+		"login_throttled",
+		fmt.Sprintf("Too many failed login attempts. Try again in %d seconds.", retryAfterSeconds),
+	)
+}
+
+func retryAfterSeconds(retryAfter time.Duration) int {
 	retryAfterSeconds := int(retryAfter / time.Second)
 	if retryAfter%time.Second != 0 {
 		retryAfterSeconds++
@@ -56,7 +74,5 @@ func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
 	if retryAfterSeconds <= 0 {
 		retryAfterSeconds = 1
 	}
-
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
-	writeErrorMessage(w, http.StatusTooManyRequests, "too_many_requests", "Rate limit exceeded.")
+	return retryAfterSeconds
 }

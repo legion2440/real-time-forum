@@ -62,7 +62,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		loginIdentifier = strings.TrimSpace(req.Username)
 	}
 	if retryAfter := h.security.localAuthRetryAfter(loginIdentifier); retryAfter > 0 {
-		writeRateLimited(w, retryAfter)
+		writeFailedLoginThrottled(w, retryAfter)
 		return
 	}
 
