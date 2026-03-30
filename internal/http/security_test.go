@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -181,7 +182,8 @@ func TestLoginThrottlerBackoffGrowthAndCap(t *testing.T) {
 func TestFailedLoginThrottlingMessageAndReset(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	security := NewSecurity(SecurityOptions{
-		Now: func() time.Time { return now },
+		Now:           func() time.Time { return now },
+		AuthEndpoints: RateLimitConfig{Requests: 1000, Interval: time.Minute, Burst: 1000},
 	})
 	h, cleanup := newAuthHandlerWithSecurity(t, security)
 	defer cleanup()
@@ -321,7 +323,7 @@ func newAuthHandlerWithSecurity(t *testing.T, security *Security) (*Handler, fun
 		sqlite.NewUserRepo(db),
 		sqlite.NewSessionRepo(db),
 		fixedClock{t: time.Unix(1700000000, 0)},
-		staticID{token: "session-token"},
+		&securityTestIDGenerator{},
 		24*time.Hour,
 	)
 
@@ -345,4 +347,13 @@ func newSecurityTestWebDir(t *testing.T) string {
 		t.Fatalf("write 404.html: %v", err)
 	}
 	return webDir
+}
+
+type securityTestIDGenerator struct {
+	next int
+}
+
+func (g *securityTestIDGenerator) New() (string, error) {
+	g.next++
+	return "security-session-token-" + strconv.Itoa(g.next), nil
 }
