@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"time"
 
 	"forum/internal/domain"
 	"forum/internal/repo"
@@ -38,9 +39,9 @@ func (r *PostRepo) Create(ctx context.Context, post *domain.Post, categoryIDs []
 	}()
 
 	res, err := tx.ExecContext(ctx, `
-        INSERT INTO posts (user_id, title, body, attachment_id, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    `, post.UserID, post.Title, post.Body, nullableAttachmentID(post.Attachment), timeToUnix(post.CreatedAt))
+        INSERT INTO posts (user_id, title, body, attachment_id, is_under_review, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    `, post.UserID, post.Title, post.Body, nullableAttachmentID(post.Attachment), 1, timeToUnix(post.CreatedAt))
 	if err != nil {
 		return 0, err
 	}
@@ -83,6 +84,31 @@ func (r *PostRepo) Exists(ctx context.Context, id int64) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func (r *PostRepo) ListUnderReview(ctx context.Context) ([]domain.Post, error) {
+	return r.listByQuery(ctx, `
+		SELECT p.id, p.user_id, u.username, u.display_name, u.role, p.title, p.body,
+		       a.id, a.mime, a.size,
+		       p.created_at, p.is_under_review, p.approved_at, p.delete_protected, p.deleted_at,
+		       au.id, au.username, au.display_name, au.role,
+		       du.id, du.username, du.display_name, du.role,
+		       COALESCE(SUM(CASE WHEN pr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
+		       COALESCE(SUM(CASE WHEN pr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
+		       (SELECT COUNT(1) FROM comments c WHERE c.post_id = p.id) AS comments_count
+		FROM posts p
+		JOIN users u ON u.id = p.user_id
+		LEFT JOIN attachments a ON a.id = p.attachment_id
+		LEFT JOIN users au ON au.id = p.approved_by
+		LEFT JOIN users du ON du.id = p.deleted_by
+		LEFT JOIN post_reactions pr ON pr.post_id = p.id
+		WHERE p.is_under_review = 1 AND p.deleted_at IS NULL
+		GROUP BY p.id, p.user_id, u.username, u.display_name, u.role, p.title, p.body,
+		         a.id, a.mime, a.size, p.created_at, p.is_under_review, p.approved_at, p.delete_protected, p.deleted_at,
+		         au.id, au.username, au.display_name, au.role,
+		         du.id, du.username, du.display_name, du.role
+		ORDER BY p.created_at DESC, p.id DESC
+	`, nil)
 }
 
 func (r *PostRepo) Update(ctx context.Context, post *domain.Post, categoryIDs []int64) (err error) {
@@ -136,6 +162,132 @@ func (r *PostRepo) Update(ctx context.Context, post *domain.Post, categoryIDs []
 	return nil
 }
 
+func (r *PostRepo) UpdateCategories(ctx context.Context, postID int64, categoryIDs []int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM post_categories WHERE post_id = ?`, postID); err != nil {
+		return err
+	}
+	for _, categoryID := range categoryIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO post_categories (post_id, category_id) VALUES (?, ?)`, postID, categoryID); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *PostRepo) Approve(ctx context.Context, postID, approvedByUserID int64, approvedAt time.Time, categoryIDs []int64, updateCategories bool) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE posts
+		SET is_under_review = 0,
+		    approved_by = ?,
+		    approved_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+	`, approvedByUserID, timeToUnix(approvedAt), postID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	if updateCategories {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM post_categories WHERE post_id = ?`, postID); err != nil {
+			return err
+		}
+		for _, categoryID := range categoryIDs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO post_categories (post_id, category_id) VALUES (?, ?)`, postID, categoryID); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *PostRepo) SoftDelete(ctx context.Context, id, actorUserID int64, actorRole domain.UserRole, deletedAt time.Time) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE posts
+		SET deleted_at = ?, deleted_by = ?, deleted_by_role = ?
+		WHERE id = ? AND deleted_at IS NULL AND delete_protected = 0
+	`, timeToUnix(deletedAt), actorUserID, strings.TrimSpace(string(actorRole)), id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
+func (r *PostRepo) Restore(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE posts
+		SET deleted_at = NULL, deleted_by = NULL, deleted_by_role = ''
+		WHERE id = ? AND deleted_at IS NOT NULL
+	`, id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
+func (r *PostRepo) SetDeleteProtection(ctx context.Context, id int64, protected bool) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE posts
+		SET delete_protected = ?
+		WHERE id = ?
+	`, boolToInt(protected), id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
 func (r *PostRepo) Delete(ctx context.Context, id int64) error {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM posts WHERE id = ?`, id)
 	if err != nil {
@@ -152,49 +304,34 @@ func (r *PostRepo) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *PostRepo) GetByID(ctx context.Context, id int64) (*domain.Post, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT p.id, p.user_id, u.username, u.display_name, p.title, p.body,
+	posts, err := r.listByQuery(ctx, `
+		SELECT p.id, p.user_id, u.username, u.display_name, u.role, p.title, p.body,
 		       a.id, a.mime, a.size,
-		       p.created_at,
+		       p.created_at, p.is_under_review, p.approved_at, p.delete_protected, p.deleted_at,
+		       au.id, au.username, au.display_name, au.role,
+		       du.id, du.username, du.display_name, du.role,
 		       COALESCE(SUM(CASE WHEN pr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN pr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
 		       (SELECT COUNT(1) FROM comments c WHERE c.post_id = p.id) AS comments_count
 		FROM posts p
 		JOIN users u ON u.id = p.user_id
 		LEFT JOIN attachments a ON a.id = p.attachment_id
+		LEFT JOIN users au ON au.id = p.approved_by
+		LEFT JOIN users du ON du.id = p.deleted_by
 		LEFT JOIN post_reactions pr ON pr.post_id = p.id
 		WHERE p.id = ?
-		GROUP BY p.id, p.user_id, u.username, u.display_name, p.title, p.body, a.id, a.mime, a.size, p.created_at
-	`, id)
-
-	var post domain.Post
-	var created int64
-	var authorUsername string
-	var authorDisplayName sql.NullString
-	var attachmentID sql.NullInt64
-	var attachmentMime sql.NullString
-	var attachmentSize sql.NullInt64
-	if err := row.Scan(&post.ID, &post.UserID, &authorUsername, &authorDisplayName, &post.Title, &post.Body, &attachmentID, &attachmentMime, &attachmentSize, &created, &post.Likes, &post.Dislikes, &post.CommentsCount); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, repo.ErrNotFound
-		}
-		return nil, err
-	}
-	post.Author = domain.UserRef{
-		ID:          post.UserID,
-		Username:    authorUsername,
-		DisplayName: strings.TrimSpace(authorDisplayName.String),
-	}
-	post.Attachment = attachmentFromNullableFields(attachmentID, attachmentMime, attachmentSize)
-	post.CreatedAt = unixToTime(created)
-
-	categories, err := r.fetchCategories(ctx, []int64{post.ID})
+		GROUP BY p.id, p.user_id, u.username, u.display_name, u.role, p.title, p.body,
+		         a.id, a.mime, a.size, p.created_at, p.is_under_review, p.approved_at, p.delete_protected, p.deleted_at,
+		         au.id, au.username, au.display_name, au.role,
+		         du.id, du.username, du.display_name, du.role
+	`, []any{id})
 	if err != nil {
 		return nil, err
 	}
-	post.Categories = categories[post.ID]
-
-	return &post, nil
+	if len(posts) == 0 {
+		return nil, repo.ErrNotFound
+	}
+	return &posts[0], nil
 }
 
 func (r *PostRepo) List(ctx context.Context, filter domain.PostFilter) ([]domain.Post, error) {
@@ -202,15 +339,19 @@ func (r *PostRepo) List(ctx context.Context, filter domain.PostFilter) ([]domain
 	var args []any
 
 	sb.WriteString(`
-		SELECT p.id, p.user_id, u.username, u.display_name, p.title, p.body,
+		SELECT p.id, p.user_id, u.username, u.display_name, u.role, p.title, p.body,
 		       a.id, a.mime, a.size,
-		       p.created_at,
+		       p.created_at, p.is_under_review, p.approved_at, p.delete_protected, p.deleted_at,
+		       au.id, au.username, au.display_name, au.role,
+		       du.id, du.username, du.display_name, du.role,
 		       COALESCE(SUM(CASE WHEN pr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN pr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes,
 		       (SELECT COUNT(1) FROM comments c WHERE c.post_id = p.id) AS comments_count
 		FROM posts p
 		JOIN users u ON u.id = p.user_id
 		LEFT JOIN attachments a ON a.id = p.attachment_id
+		LEFT JOIN users au ON au.id = p.approved_by
+		LEFT JOIN users du ON du.id = p.deleted_by
 		LEFT JOIN post_reactions pr ON pr.post_id = p.id
 		WHERE 1 = 1
 	`)
@@ -242,54 +383,15 @@ func (r *PostRepo) List(ctx context.Context, filter domain.PostFilter) ([]domain
 		}
 	}
 
-	sb.WriteString(" GROUP BY p.id, p.user_id, u.username, u.display_name, p.title, p.body, a.id, a.mime, a.size, p.created_at ORDER BY p.created_at DESC")
+	sb.WriteString(`
+		GROUP BY p.id, p.user_id, u.username, u.display_name, u.role, p.title, p.body,
+		         a.id, a.mime, a.size, p.created_at, p.is_under_review, p.approved_at, p.delete_protected, p.deleted_at,
+		         au.id, au.username, au.display_name, au.role,
+		         du.id, du.username, du.display_name, du.role
+		ORDER BY p.created_at DESC, p.id DESC
+	`)
 
-	rows, err := r.db.QueryContext(ctx, sb.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var posts []domain.Post
-	var ids []int64
-	for rows.Next() {
-		var p domain.Post
-		var created int64
-		var authorUsername string
-		var authorDisplayName sql.NullString
-		var attachmentID sql.NullInt64
-		var attachmentMime sql.NullString
-		var attachmentSize sql.NullInt64
-		if err := rows.Scan(&p.ID, &p.UserID, &authorUsername, &authorDisplayName, &p.Title, &p.Body, &attachmentID, &attachmentMime, &attachmentSize, &created, &p.Likes, &p.Dislikes, &p.CommentsCount); err != nil {
-			return nil, err
-		}
-		p.Author = domain.UserRef{
-			ID:          p.UserID,
-			Username:    authorUsername,
-			DisplayName: strings.TrimSpace(authorDisplayName.String),
-		}
-		p.Attachment = attachmentFromNullableFields(attachmentID, attachmentMime, attachmentSize)
-		p.CreatedAt = unixToTime(created)
-		posts = append(posts, p)
-		ids = append(ids, p.ID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(posts) == 0 {
-		return posts, nil
-	}
-
-	categories, err := r.fetchCategories(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	for i := range posts {
-		posts[i].Categories = categories[posts[i].ID]
-	}
-
-	return posts, nil
+	return r.listByQuery(ctx, sb.String(), args)
 }
 
 func (r *PostRepo) fetchCategories(ctx context.Context, postIDs []int64) (map[int64][]domain.Category, error) {
@@ -299,11 +401,11 @@ func (r *PostRepo) fetchCategories(ctx context.Context, postIDs []int64) (map[in
 	}
 
 	query := `
-        SELECT pc.post_id, c.id, c.name
+        SELECT pc.post_id, c.id, c.code, c.name, c.is_system
         FROM post_categories pc
         JOIN categories c ON c.id = pc.category_id
         WHERE pc.post_id IN (` + placeholders(len(postIDs)) + `)
-        ORDER BY c.name ASC
+        ORDER BY c.is_system DESC, c.name ASC
     `
 
 	args := make([]interface{}, 0, len(postIDs))
@@ -320,9 +422,13 @@ func (r *PostRepo) fetchCategories(ctx context.Context, postIDs []int64) (map[in
 	for rows.Next() {
 		var postID int64
 		var c domain.Category
-		if err := rows.Scan(&postID, &c.ID, &c.Name); err != nil {
+		var isSystem int
+		if err := rows.Scan(&postID, &c.ID, &c.Code, &c.Name, &isSystem); err != nil {
 			return nil, err
 		}
+		c.Code = strings.TrimSpace(c.Code)
+		c.Name = strings.TrimSpace(c.Name)
+		c.IsSystem = isSystem != 0
 		out[postID] = append(out[postID], c)
 	}
 	if err := rows.Err(); err != nil {
@@ -330,4 +436,116 @@ func (r *PostRepo) fetchCategories(ctx context.Context, postIDs []int64) (map[in
 	}
 
 	return out, nil
+}
+
+func (r *PostRepo) listByQuery(ctx context.Context, query string, args []any) ([]domain.Post, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []domain.Post
+	var ids []int64
+	for rows.Next() {
+		post, err := scanPostRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		posts = append(posts, *post)
+		ids = append(ids, post.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(posts) == 0 {
+		return posts, nil
+	}
+	categories, err := r.fetchCategories(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range posts {
+		posts[i].Categories = categories[posts[i].ID]
+	}
+	return posts, nil
+}
+
+func scanPostRow(s scanner) (*domain.Post, error) {
+	var (
+		post                    domain.Post
+		createdAt               int64
+		underReview             int
+		approvedAt              sql.NullInt64
+		deleteProtected         int
+		deletedAt               sql.NullInt64
+		authorUsername          string
+		authorDisplayName       sql.NullString
+		authorRole              string
+		attachmentID            sql.NullInt64
+		attachmentMime          sql.NullString
+		attachmentSize          sql.NullInt64
+		approvedByID            sql.NullInt64
+		approvedByUsername      sql.NullString
+		approvedByDisplayName   sql.NullString
+		approvedByRole          sql.NullString
+		deletedByID             sql.NullInt64
+		deletedByUsername       sql.NullString
+		deletedByDisplayName    sql.NullString
+		deletedByRole           sql.NullString
+	)
+	if err := s.Scan(
+		&post.ID, &post.UserID, &authorUsername, &authorDisplayName, &authorRole, &post.Title, &post.Body,
+		&attachmentID, &attachmentMime, &attachmentSize,
+		&createdAt, &underReview, &approvedAt, &deleteProtected, &deletedAt,
+		&approvedByID, &approvedByUsername, &approvedByDisplayName, &approvedByRole,
+		&deletedByID, &deletedByUsername, &deletedByDisplayName, &deletedByRole,
+		&post.Likes, &post.Dislikes, &post.CommentsCount,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, repo.ErrNotFound
+		}
+		return nil, err
+	}
+
+	post.Author = domain.UserRef{
+		ID:          post.UserID,
+		Username:    authorUsername,
+		DisplayName: strings.TrimSpace(authorDisplayName.String),
+		Role:        domain.NormalizeUserRole(authorRole),
+		Badges:      domain.StaffBadgesForRole(domain.NormalizeUserRole(authorRole)),
+	}
+	post.Attachment = attachmentFromNullableFields(attachmentID, attachmentMime, attachmentSize)
+	post.CreatedAt = unixToTime(createdAt)
+	post.UnderReview = underReview != 0
+	post.DeleteProtected = deleteProtected != 0
+	if approvedAt.Valid && approvedAt.Int64 > 0 {
+		value := unixToTime(approvedAt.Int64)
+		post.ApprovedAt = &value
+	}
+	if approvedByID.Valid && approvedByID.Int64 > 0 {
+		role := domain.NormalizeUserRole(strings.TrimSpace(approvedByRole.String))
+		post.ApprovedBy = &domain.UserRef{
+			ID:          approvedByID.Int64,
+			Username:    strings.TrimSpace(approvedByUsername.String),
+			DisplayName: strings.TrimSpace(approvedByDisplayName.String),
+			Role:        role,
+			Badges:      domain.StaffBadgesForRole(role),
+		}
+	}
+	if deletedAt.Valid && deletedAt.Int64 > 0 {
+		value := unixToTime(deletedAt.Int64)
+		post.DeletedAt = &value
+	}
+	if deletedByID.Valid && deletedByID.Int64 > 0 {
+		role := domain.NormalizeUserRole(strings.TrimSpace(deletedByRole.String))
+		post.DeletedBy = &domain.UserRef{
+			ID:          deletedByID.Int64,
+			Username:    strings.TrimSpace(deletedByUsername.String),
+			DisplayName: strings.TrimSpace(deletedByDisplayName.String),
+			Role:        role,
+			Badges:      domain.StaffBadgesForRole(role),
+		}
+	}
+	return &post, nil
 }

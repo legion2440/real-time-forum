@@ -670,6 +670,26 @@ func buildNotificationText(notification domain.Notification) string {
 		return actorName + " commented on a post you subscribed to"
 	case domain.NotificationTypeFollowedAuthorPublished:
 		return actorName + " published a new post"
+	case "role_request_created":
+		return actorName + " submitted a role request"
+	case "role_request_reviewed":
+		return actorName + " reviewed your role request"
+	case "role_changed":
+		return actorName + " changed your role"
+	case "post_approved":
+		return actorName + " approved your post"
+	case "content_deleted":
+		return actorName + " deleted your content"
+	case "content_restored":
+		return actorName + " restored your content"
+	case "report_created":
+		return actorName + " sent a report to your queue"
+	case "report_closed":
+		return actorName + " closed your report"
+	case "appeal_created":
+		return actorName + " sent an appeal to your queue"
+	case "appeal_closed":
+		return actorName + " reviewed your appeal"
 	default:
 		return "New notification"
 	}
@@ -698,6 +718,13 @@ func buildNotificationContext(notification domain.Notification) string {
 			return notification.Payload.PostTitle
 		}
 		return notification.Payload.PostPreview
+	case "role_request_created", "role_request_reviewed", "role_changed", "content_deleted", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
+		return strings.TrimSpace(notification.Payload.Reason)
+	case "post_approved":
+		if strings.TrimSpace(notification.Payload.PostTitle) != "" {
+			return notification.Payload.PostTitle
+		}
+		return notification.Payload.PostPreview
 	default:
 		return ""
 	}
@@ -720,6 +747,14 @@ func buildUnavailableNotificationContext(notification domain.Notification) strin
 			return "[deleted comment] " + preview
 		}
 		return "comment deleted"
+	case "post_approved", "content_deleted", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
+		if notification.EntityType == domain.NotificationEntityTypePost {
+			return "post deleted"
+		}
+		if notification.EntityType == domain.NotificationEntityTypeComment {
+			return "comment deleted"
+		}
+		return buildNotificationContext(notification)
 	default:
 		return "content is no longer available"
 	}
@@ -747,6 +782,10 @@ func buildNotificationLinkPath(notification domain.Notification) string {
 			commentID = notification.EntityID
 		}
 		return buildPostCommentPath(postID, commentID)
+	case "post_approved", "content_deleted", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
+		if notification.EntityType == domain.NotificationEntityTypePost {
+			return buildPostPath(notification.EntityID)
+		}
 	}
 	return ""
 }
@@ -774,7 +813,13 @@ func normalizeNotificationBucket(bucket string, allowEmpty bool) (string, error)
 		return "", nil
 	}
 	switch normalized {
-	case domain.NotificationBucketDM, domain.NotificationBucketMyContent, domain.NotificationBucketSubscriptions:
+	case domain.NotificationBucketDM,
+		domain.NotificationBucketMyContent,
+		domain.NotificationBucketSubscriptions,
+		domain.NotificationBucketDeleted,
+		domain.NotificationBucketReports,
+		domain.NotificationBucketAppeals,
+		domain.NotificationBucketManagement:
 		return normalized, nil
 	default:
 		return "", ErrInvalidInput

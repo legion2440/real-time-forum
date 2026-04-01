@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
   last_name TEXT NOT NULL DEFAULT '',
   age INTEGER NOT NULL DEFAULT 0,
   gender TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'user',
   pass_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   profile_initialized INTEGER NOT NULL DEFAULT 0
@@ -62,9 +63,18 @@ CREATE TABLE IF NOT EXISTS posts (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   attachment_id INTEGER,
+  is_under_review INTEGER NOT NULL DEFAULT 0,
+  approved_by INTEGER,
+  approved_at INTEGER,
+  delete_protected INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER,
+  deleted_by INTEGER,
+  deleted_by_role TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE SET NULL
+  FOREIGN KEY(attachment_id) REFERENCES attachments(id) ON DELETE SET NULL,
+  FOREIGN KEY(approved_by) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY(deleted_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -75,14 +85,20 @@ CREATE TABLE IF NOT EXISTS comments (
   body TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   deleted_at INTEGER,
+  deleted_body TEXT NOT NULL DEFAULT '',
+  deleted_by INTEGER,
+  deleted_by_role TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE,
   FOREIGN KEY(parent_id) REFERENCES comments(id) ON DELETE CASCADE,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(deleted_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  is_system INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS post_categories (
@@ -169,4 +185,82 @@ CREATE TABLE IF NOT EXISTS user_follows (
   PRIMARY KEY (follower_user_id, followed_user_id),
   FOREIGN KEY(follower_user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(followed_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS moderation_role_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  requester_user_id INTEGER NOT NULL,
+  requested_role TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  reviewed_at INTEGER,
+  reviewed_by INTEGER,
+  review_note TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS moderation_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL,
+  target_id INTEGER NOT NULL,
+  reporter_user_id INTEGER NOT NULL,
+  reporter_role TEXT NOT NULL,
+  content_author_user_id INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  note TEXT NOT NULL,
+  status TEXT NOT NULL,
+  route_to_roles TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  closed_by INTEGER,
+  closed_by_role TEXT NOT NULL DEFAULT '',
+  decision_reason TEXT NOT NULL DEFAULT '',
+  decision_note TEXT NOT NULL DEFAULT '',
+  linked_previous_decision_id INTEGER,
+  FOREIGN KEY(reporter_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(content_author_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(closed_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS moderation_appeals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL,
+  target_id INTEGER NOT NULL,
+  requester_user_id INTEGER NOT NULL,
+  target_role TEXT NOT NULL,
+  status TEXT NOT NULL,
+  note TEXT NOT NULL,
+  source_history_id INTEGER NOT NULL,
+  linked_previous_decision_id INTEGER,
+  created_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  closed_by INTEGER,
+  closed_by_role TEXT NOT NULL DEFAULT '',
+  decision_note TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(closed_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS moderation_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  acted_at INTEGER NOT NULL,
+  action_type TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id INTEGER NOT NULL,
+  content_author_user_id INTEGER NOT NULL DEFAULT 0,
+  content_author_name TEXT NOT NULL DEFAULT '',
+  actor_user_id INTEGER NOT NULL DEFAULT 0,
+  actor_username TEXT NOT NULL DEFAULT '',
+  actor_display_name TEXT NOT NULL DEFAULT '',
+  actor_role TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  current_status TEXT NOT NULL DEFAULT '',
+  route_to_role TEXT NOT NULL DEFAULT '',
+  linked_previous_decision_id INTEGER,
+  post_title_snapshot TEXT NOT NULL DEFAULT '',
+  post_body_snapshot TEXT NOT NULL DEFAULT '',
+  comment_body_snapshot TEXT NOT NULL DEFAULT ''
 );

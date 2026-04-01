@@ -119,13 +119,18 @@ func (r *CenterRepo) CountUnreadNotifications(ctx context.Context, userID int64)
 			COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS total,
 			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS dm_total,
 			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS my_content_total,
-			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS subscriptions_total
+			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS subscriptions_total,
+			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS deleted_total,
+			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS reports_total,
+			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS appeals_total,
+			COALESCE(SUM(CASE WHEN is_read = 0 AND bucket = ? THEN 1 ELSE 0 END), 0) AS management_total
 		FROM notifications
 		WHERE user_id = ?
-	`, domain.NotificationBucketDM, domain.NotificationBucketMyContent, domain.NotificationBucketSubscriptions, userID)
+	`, domain.NotificationBucketDM, domain.NotificationBucketMyContent, domain.NotificationBucketSubscriptions,
+		domain.NotificationBucketDeleted, domain.NotificationBucketReports, domain.NotificationBucketAppeals, domain.NotificationBucketManagement, userID)
 
 	var summary domain.NotificationUnreadSummary
-	if err := row.Scan(&summary.Total, &summary.DM, &summary.MyContent, &summary.Subscriptions); err != nil {
+	if err := row.Scan(&summary.Total, &summary.DM, &summary.MyContent, &summary.Subscriptions, &summary.Deleted, &summary.Reports, &summary.Appeals, &summary.Management); err != nil {
 		return summary, err
 	}
 	return summary, nil

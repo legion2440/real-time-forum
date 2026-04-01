@@ -44,10 +44,17 @@ func (s *PostService) ListPosts(ctx context.Context, filter domain.PostFilter) (
 		filter.Mine = false
 		filter.Liked = false
 	}
-	return s.posts.List(ctx, filter)
+	posts, err := s.posts.List(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range posts {
+		maskDeletedPost(&posts[i], filter.ViewerRole)
+	}
+	return posts, nil
 }
 
-func (s *PostService) GetPost(ctx context.Context, id int64) (*domain.Post, error) {
+func (s *PostService) GetPost(ctx context.Context, id int64, viewerRole domain.UserRole) (*domain.Post, error) {
 	post, err := s.posts.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
@@ -62,6 +69,7 @@ func (s *PostService) GetPost(ctx context.Context, id int64) (*domain.Post, erro
 	}
 	post.Comments = comments
 	post.CommentsCount = len(comments)
+	maskDeletedPost(post, viewerRole)
 	return post, nil
 }
 
@@ -131,11 +139,14 @@ func (s *PostService) CreateComment(ctx context.Context, userID, postID int64, b
 		return nil, ErrInvalidInput
 	}
 
-	exists, err := s.posts.Exists(ctx, postID)
+	post, err := s.posts.GetByID(ctx, postID)
 	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-	if !exists {
+	if post.DeletedAt != nil {
 		return nil, ErrNotFound
 	}
 
@@ -209,11 +220,14 @@ func (s *PostService) ReactPost(ctx context.Context, userID, postID int64, value
 		return domain.ReactionChange{}, ErrInvalidInput
 	}
 
-	exists, err := s.posts.Exists(ctx, postID)
+	post, err := s.posts.GetByID(ctx, postID)
 	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return domain.ReactionChange{}, ErrNotFound
+		}
 		return domain.ReactionChange{}, err
 	}
-	if !exists {
+	if post.DeletedAt != nil {
 		return domain.ReactionChange{}, ErrNotFound
 	}
 
@@ -278,6 +292,9 @@ func (s *PostService) UpdatePost(ctx context.Context, userID, postID int64, titl
 	if post.UserID != userID {
 		return nil, ErrForbidden
 	}
+	if post.DeletedAt != nil {
+		return nil, ErrNotFound
+	}
 
 	post.Title = title
 	post.Body = body
@@ -304,6 +321,9 @@ func (s *PostService) DeletePost(ctx context.Context, userID, postID int64) erro
 	}
 	if post.UserID != userID {
 		return ErrForbidden
+	}
+	if post.DeletedAt != nil {
+		return ErrNotFound
 	}
 	if err := s.posts.Delete(ctx, postID); err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
@@ -369,8 +389,8 @@ func (s *PostService) DeleteComment(ctx context.Context, userID, commentID int64
 	if err != nil {
 		return err
 	}
-	if comment.ParentID != nil || hasDescendants {
-		if err := s.comments.SoftDelete(ctx, commentID, s.clock.Now()); err != nil {
+	if hasDescendants {
+		if err := s.comments.SoftDelete(ctx, commentID, s.clock.Now(), userID, domain.RoleUser); err != nil {
 			if errors.Is(err, repo.ErrNotFound) {
 				return ErrNotFound
 			}
@@ -476,4 +496,19 @@ func (s *PostService) findThreadRootCommentID(ctx context.Context, comment *doma
 
 func isDeletedComment(comment *domain.Comment) bool {
 	return comment != nil && comment.DeletedAt != nil
+}
+
+func maskDeletedPost(post *domain.Post, viewerRole domain.UserRole) {
+	if post == nil || post.DeletedAt == nil {
+		return
+	}
+	switch viewerRole {
+	case domain.RoleAdmin, domain.RoleOwner:
+		return
+	default:
+		post.Title = "[deleted]"
+		post.Body = ""
+		post.Attachment = nil
+		post.UnderReview = false
+	}
 }

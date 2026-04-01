@@ -22,8 +22,18 @@ func handleServiceError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 	case errors.Is(err, service.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, service.ErrProtectedContent):
+		writeErrorMessage(w, http.StatusConflict, "protected_content", "Delete protection is enabled for this content.")
 	case errors.Is(err, service.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, service.ErrAlreadyPending):
+		writeErrorMessage(w, http.StatusConflict, "already_pending", "A pending request already exists.")
+	case errors.Is(err, service.ErrBootstrapUnavailable):
+		writeErrorMessage(w, http.StatusConflict, "bootstrap_unavailable", "Owner bootstrap is no longer available.")
+	case errors.Is(err, service.ErrNoFurtherAppeal):
+		writeErrorMessage(w, http.StatusConflict, "no_further_appeal", "No higher appeal stage is available.")
+	case errors.Is(err, service.ErrInvalidRoleTransition):
+		writeErrorMessage(w, http.StatusBadRequest, "invalid_role_transition", "This role transition is not allowed.")
 	case errors.Is(err, service.ErrEmailTaken):
 		writeError(w, http.StatusConflict, "this e-mail already registered")
 	case errors.Is(err, service.ErrUsernameTaken):

@@ -6,6 +6,10 @@ const (
 	NotificationBucketDM            = "dm"
 	NotificationBucketMyContent     = "my_content"
 	NotificationBucketSubscriptions = "subscriptions"
+	NotificationBucketDeleted       = "deleted"
+	NotificationBucketReports       = "reports"
+	NotificationBucketAppeals       = "appeals"
+	NotificationBucketManagement    = "management"
 )
 
 const (
@@ -68,6 +72,10 @@ type NotificationUnreadSummary struct {
 	DM            int `json:"dm"`
 	MyContent     int `json:"myContent"`
 	Subscriptions int `json:"subscriptions"`
+	Deleted       int `json:"deleted"`
+	Reports       int `json:"reports"`
+	Appeals       int `json:"appeals"`
+	Management    int `json:"management"`
 }
 
 type NotificationList struct {

@@ -19,9 +19,9 @@ func NewUserRepo(db *sql.DB) *UserRepo {
 
 func (r *UserRepo) Create(ctx context.Context, user *domain.User) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `
-        INSERT INTO users (email, username, display_name, pass_hash, created_at, profile_initialized)
-        VALUES (?, ?, ?, ?, ?, ?)
-    `, user.Email, user.Username, nullableTrimmedText(user.DisplayName), user.PassHash, timeToUnix(user.CreatedAt), boolToInt(user.ProfileInitialized))
+        INSERT INTO users (email, username, display_name, role, pass_hash, created_at, profile_initialized)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, user.Email, user.Username, nullableTrimmedText(user.DisplayName), normalizeStoredRole(user.Role), user.PassHash, timeToUnix(user.CreatedAt), boolToInt(user.ProfileInitialized))
 	if err != nil {
 		return 0, err
 	}
@@ -34,7 +34,7 @@ func (r *UserRepo) Create(ctx context.Context, user *domain.User) (int64, error)
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         WHERE email = ?
     `, email)
@@ -44,7 +44,7 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 
 func (r *UserRepo) GetByEmailCI(ctx context.Context, email string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         WHERE email = ? COLLATE NOCASE
         ORDER BY id ASC
@@ -56,7 +56,7 @@ func (r *UserRepo) GetByEmailCI(ctx context.Context, email string) (*domain.User
 
 func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         WHERE username = ?
     `, username)
@@ -66,7 +66,7 @@ func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*domain.
 
 func (r *UserRepo) GetByUsernameCI(ctx context.Context, username string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         WHERE username = ? COLLATE NOCASE
         ORDER BY id ASC
@@ -78,7 +78,7 @@ func (r *UserRepo) GetByUsernameCI(ctx context.Context, username string) (*domai
 
 func (r *UserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         WHERE id = ?
     `, id)
@@ -88,7 +88,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) 
 
 func (r *UserRepo) GetByDisplayNameCI(ctx context.Context, displayName string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         WHERE display_name = ? COLLATE NOCASE
           AND display_name IS NOT NULL
@@ -102,7 +102,7 @@ func (r *UserRepo) GetByDisplayNameCI(ctx context.Context, displayName string) (
 
 func (r *UserRepo) GetPublicByUsername(ctx context.Context, username string) (*domain.User, error) {
 	row := r.db.QueryRowContext(ctx, `
-        SELECT id, username, display_name, first_name, last_name, age, gender
+        SELECT id, username, display_name, first_name, last_name, age, gender, role
         FROM users
         WHERE username = ?
     `, username)
@@ -111,7 +111,7 @@ func (r *UserRepo) GetPublicByUsername(ctx context.Context, username string) (*d
 		user        domain.User
 		displayName sql.NullString
 	)
-	if err := row.Scan(&user.ID, &user.Username, &displayName, &user.FirstName, &user.LastName, &user.Age, &user.Gender); err != nil {
+	if err := row.Scan(&user.ID, &user.Username, &displayName, &user.FirstName, &user.LastName, &user.Age, &user.Gender, &user.Role); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
@@ -121,6 +121,8 @@ func (r *UserRepo) GetPublicByUsername(ctx context.Context, username string) (*d
 	user.FirstName = strings.TrimSpace(user.FirstName)
 	user.LastName = strings.TrimSpace(user.LastName)
 	user.Gender = strings.TrimSpace(user.Gender)
+	user.Role = domain.NormalizeUserRole(string(user.Role))
+	user.Badges = domain.StaffBadgesForRole(user.Role)
 	return &user, nil
 }
 
@@ -152,9 +154,53 @@ func (r *UserRepo) UpdateProfile(ctx context.Context, userID int64, displayName 
 	return nil
 }
 
+func (r *UserRepo) UpdateRole(ctx context.Context, userID int64, role domain.UserRole) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE users
+		SET role = ?
+		WHERE id = ?
+	`, normalizeStoredRole(role), userID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
+func (r *UserRepo) AnyByRoles(ctx context.Context, roles ...domain.UserRole) (bool, error) {
+	if len(roles) == 0 {
+		return false, nil
+	}
+
+	args := make([]any, 0, len(roles))
+	for _, role := range roles {
+		args = append(args, normalizeStoredRole(role))
+	}
+	row := r.db.QueryRowContext(ctx, `
+		SELECT 1
+		FROM users
+		WHERE role IN (`+placeholders(len(args))+`)
+		LIMIT 1
+	`, args...)
+	var marker int
+	if err := row.Scan(&marker); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return marker == 1, nil
+}
+
 func (r *UserRepo) List(ctx context.Context) ([]domain.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, email, username, display_name, first_name, last_name, age, gender, pass_hash, created_at, profile_initialized
+        SELECT id, email, username, display_name, first_name, last_name, age, gender, role, pass_hash, created_at, profile_initialized
         FROM users
         ORDER BY id ASC
     `)
@@ -181,7 +227,7 @@ func (r *UserRepo) List(ctx context.Context) ([]domain.User, error) {
 
 func (r *UserRepo) ListPublic(ctx context.Context) ([]domain.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, username, display_name
+        SELECT id, username, display_name, role
         FROM users
         ORDER BY id ASC
     `)
@@ -194,10 +240,12 @@ func (r *UserRepo) ListPublic(ctx context.Context) ([]domain.User, error) {
 	for rows.Next() {
 		var user domain.User
 		var displayName sql.NullString
-		if err := rows.Scan(&user.ID, &user.Username, &displayName); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &displayName, &user.Role); err != nil {
 			return nil, err
 		}
 		user.DisplayName = strings.TrimSpace(displayName.String)
+		user.Role = domain.NormalizeUserRole(string(user.Role))
+		user.Badges = domain.StaffBadgesForRole(user.Role)
 		users = append(users, user)
 	}
 
@@ -219,10 +267,11 @@ func scanUser(s scanner) (*domain.User, error) {
 		firstName          string
 		lastName           string
 		gender             string
+		role               string
 		createdAtUnix      int64
 		profileInitialized int
 	)
-	if err := s.Scan(&user.ID, &user.Email, &user.Username, &displayName, &firstName, &lastName, &user.Age, &gender, &user.PassHash, &createdAtUnix, &profileInitialized); err != nil {
+	if err := s.Scan(&user.ID, &user.Email, &user.Username, &displayName, &firstName, &lastName, &user.Age, &gender, &role, &user.PassHash, &createdAtUnix, &profileInitialized); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
@@ -233,9 +282,15 @@ func scanUser(s scanner) (*domain.User, error) {
 	user.FirstName = strings.TrimSpace(firstName)
 	user.LastName = strings.TrimSpace(lastName)
 	user.Gender = strings.TrimSpace(gender)
+	user.Role = domain.NormalizeUserRole(role)
+	user.Badges = domain.StaffBadgesForRole(user.Role)
 	user.CreatedAt = unixToTime(createdAtUnix)
 	user.ProfileInitialized = profileInitialized != 0
 	return &user, nil
+}
+
+func normalizeStoredRole(role domain.UserRole) string {
+	return string(domain.NormalizeUserRole(string(role)))
 }
 
 func boolToInt(value bool) int {

@@ -19,6 +19,7 @@ type Handler struct {
 	pms         *service.PrivateMessageService
 	center      *service.CenterService
 	attachments *service.AttachmentService
+	moderation  *service.ModerationService
 	hub         *realtimews.Hub
 	security    *Security
 }
@@ -31,6 +32,7 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 		pmService         *service.PrivateMessageService
 		centerService     *service.CenterService
 		attachmentService *service.AttachmentService
+		moderationService *service.ModerationService
 		security          *Security
 	)
 	for _, dependency := range services {
@@ -46,6 +48,10 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 		case *service.CenterService:
 			if centerService == nil {
 				centerService = value
+			}
+		case *service.ModerationService:
+			if moderationService == nil {
+				moderationService = value
 			}
 		case *realtimews.Hub:
 			if value != nil {
@@ -71,6 +77,7 @@ func NewHandler(auth *service.AuthService, posts *service.PostService, services 
 		pms:         pmService,
 		center:      centerService,
 		attachments: attachmentService,
+		moderation:  moderationService,
 		hub:         hub,
 		security:    security,
 	}
@@ -97,6 +104,20 @@ func (h *Handler) Routes(webDir string) http.Handler {
 	apiMux.HandleFunc("/api/center/activity", h.handleCenterActivity)
 	apiMux.HandleFunc("/api/center/notifications", h.handleCenterNotifications)
 	apiMux.HandleFunc("/api/center/notifications/", h.handleCenterNotificationSubroutes)
+	apiMux.HandleFunc("/api/moderation/queue", h.handleModerationQueue)
+	apiMux.HandleFunc("/api/moderation/requests", h.handleModerationRequests)
+	apiMux.HandleFunc("/api/moderation/requests/", h.handleModerationRequestSubroutes)
+	apiMux.HandleFunc("/api/moderation/reports", h.handleModerationReports)
+	apiMux.HandleFunc("/api/moderation/reports/", h.handleModerationReportSubroutes)
+	apiMux.HandleFunc("/api/moderation/appeals", h.handleModerationAppeals)
+	apiMux.HandleFunc("/api/moderation/appeals/", h.handleModerationAppealSubroutes)
+	apiMux.HandleFunc("/api/moderation/posts/", h.handleModerationPostSubroutes)
+	apiMux.HandleFunc("/api/moderation/comments/", h.handleModerationCommentSubroutes)
+	apiMux.HandleFunc("/api/moderation/categories", h.handleModerationCategories)
+	apiMux.HandleFunc("/api/moderation/categories/", h.handleModerationCategorySubroutes)
+	apiMux.HandleFunc("/api/moderation/history", h.handleModerationHistory)
+	apiMux.HandleFunc("/api/moderation/history/purge", h.handleModerationHistoryPurge)
+	apiMux.HandleFunc("/api/moderation/users/", h.handleModerationUserSubroutes)
 	apiMux.HandleFunc("/api/categories", h.handleCategories)
 	apiMux.HandleFunc("/api/posts", h.handlePosts)
 	apiMux.HandleFunc("/api/posts/", h.handlePostsSubroutes)

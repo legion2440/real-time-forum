@@ -15,6 +15,8 @@ type publicProfileResponse struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+	Badges      []string `json:"badges,omitempty"`
 	FirstName   string `json:"firstName"`
 	LastName    string `json:"lastName"`
 	Age         int    `json:"age"`
@@ -31,6 +33,8 @@ type meResponse struct {
 	LastName          string                        `json:"lastName"`
 	Age               int                           `json:"age"`
 	Gender            string                        `json:"gender"`
+	Role              string                        `json:"role"`
+	Badges            []string                      `json:"badges,omitempty"`
 	NeedsProfileSetup bool                          `json:"needsProfileSetup"`
 	CreatedAt         time.Time                     `json:"created_at"`
 	HasPassword       bool                          `json:"hasPassword"`
@@ -179,6 +183,8 @@ func newPublicProfileResponse(user domain.User) publicProfileResponse {
 		ID:          strconv.FormatInt(user.ID, 10),
 		Username:    user.Username,
 		DisplayName: publicDisplayName(user),
+		Role:        string(user.Role),
+		Badges:      user.Badges,
 		FirstName:   strings.TrimSpace(user.FirstName),
 		LastName:    strings.TrimSpace(user.LastName),
 		Age:         user.Age,
@@ -196,6 +202,8 @@ func newMeResponse(user domain.User, hasPassword bool, linkedAccounts []service.
 		LastName:          strings.TrimSpace(user.LastName),
 		Age:               user.Age,
 		Gender:            strings.TrimSpace(user.Gender),
+		Role:              string(user.Role),
+		Badges:            user.Badges,
 		NeedsProfileSetup: !user.ProfileInitialized,
 		CreatedAt:         user.CreatedAt,
 		HasPassword:       hasPassword,

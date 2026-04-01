@@ -13,14 +13,21 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-var defaultCategories = []string{
-	"General",
-	"Tech",
-	"Science",
-	"Art",
-	"Sports",
-	"Music",
-	"News",
+type categorySeed struct {
+	Code     string
+	Name     string
+	IsSystem bool
+}
+
+var defaultCategories = []categorySeed{
+	{Code: "other", Name: "Other", IsSystem: true},
+	{Code: "general", Name: "General"},
+	{Code: "tech", Name: "Tech"},
+	{Code: "science", Name: "Science"},
+	{Code: "art", Name: "Art"},
+	{Code: "sports", Name: "Sports"},
+	{Code: "music", Name: "Music"},
+	{Code: "news", Name: "News"},
 }
 
 func Open(path string) (*sql.DB, error) {
@@ -75,6 +82,10 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureUserRoleColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensureUserProfileInitializedColumn(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -87,7 +98,27 @@ func Open(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensurePostModerationColumns(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := ensurePrivateMessageAttachmentColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureCommentModerationColumns(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureCategoryCodeColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureCategorySystemColumn(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureModerationTables(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -136,6 +167,10 @@ func Open(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := ensureAuthIndexes(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureModerationIndexes(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -304,6 +339,28 @@ func ensureUserGenderColumn(db *sql.DB) error {
 	return err
 }
 
+func ensureUserRoleColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "users", "role")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := db.Exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"); err != nil {
+			return err
+		}
+	}
+
+	if _, err := db.Exec("UPDATE users SET role = 'user' WHERE TRIM(COALESCE(role, '')) = ''"); err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_owner
+		ON users(role)
+		WHERE role = 'owner'
+	`)
+	return err
+}
+
 func ensurePostAttachmentColumn(db *sql.DB) error {
 	hasColumn, err := tableHasColumn(db, "posts", "attachment_id")
 	if err != nil {
@@ -317,6 +374,31 @@ func ensurePostAttachmentColumn(db *sql.DB) error {
 	return err
 }
 
+func ensurePostModerationColumns(db *sql.DB) error {
+	columns := map[string]string{
+		"is_under_review": "ALTER TABLE posts ADD COLUMN is_under_review INTEGER NOT NULL DEFAULT 0",
+		"approved_by":     "ALTER TABLE posts ADD COLUMN approved_by INTEGER",
+		"approved_at":     "ALTER TABLE posts ADD COLUMN approved_at INTEGER",
+		"delete_protected": "ALTER TABLE posts ADD COLUMN delete_protected INTEGER NOT NULL DEFAULT 0",
+		"deleted_at":      "ALTER TABLE posts ADD COLUMN deleted_at INTEGER",
+		"deleted_by":      "ALTER TABLE posts ADD COLUMN deleted_by INTEGER",
+		"deleted_by_role": "ALTER TABLE posts ADD COLUMN deleted_by_role TEXT NOT NULL DEFAULT ''",
+	}
+	for name, statement := range columns {
+		hasColumn, err := tableHasColumn(db, "posts", name)
+		if err != nil {
+			return err
+		}
+		if hasColumn {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensurePrivateMessageAttachmentColumn(db *sql.DB) error {
 	hasColumn, err := tableHasColumn(db, "private_messages", "attachment_id")
 	if err != nil {
@@ -328,6 +410,151 @@ func ensurePrivateMessageAttachmentColumn(db *sql.DB) error {
 
 	_, err = db.Exec("ALTER TABLE private_messages ADD COLUMN attachment_id INTEGER")
 	return err
+}
+
+func ensureCommentModerationColumns(db *sql.DB) error {
+	columns := map[string]string{
+		"deleted_body":    "ALTER TABLE comments ADD COLUMN deleted_body TEXT NOT NULL DEFAULT ''",
+		"deleted_by":      "ALTER TABLE comments ADD COLUMN deleted_by INTEGER",
+		"deleted_by_role": "ALTER TABLE comments ADD COLUMN deleted_by_role TEXT NOT NULL DEFAULT ''",
+	}
+	for name, statement := range columns {
+		hasColumn, err := tableHasColumn(db, "comments", name)
+		if err != nil {
+			return err
+		}
+		if hasColumn {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureCategoryCodeColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "categories", "code")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := db.Exec("ALTER TABLE categories ADD COLUMN code TEXT"); err != nil {
+			return err
+		}
+	}
+	if err := backfillCategoryCodes(db); err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_code ON categories(code)`)
+	return err
+}
+
+func ensureCategorySystemColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "categories", "is_system")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := db.Exec("ALTER TABLE categories ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`UPDATE categories SET is_system = 1 WHERE code = 'other'`)
+	return err
+}
+
+func ensureModerationTables(db *sql.DB) error {
+	statements := []string{
+		`
+		CREATE TABLE IF NOT EXISTS moderation_role_requests (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			requester_user_id INTEGER NOT NULL,
+			requested_role TEXT NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			reviewed_at INTEGER,
+			reviewed_by INTEGER,
+			review_note TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+		)
+		`,
+		`
+		CREATE TABLE IF NOT EXISTS moderation_reports (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			target_type TEXT NOT NULL,
+			target_id INTEGER NOT NULL,
+			reporter_user_id INTEGER NOT NULL,
+			reporter_role TEXT NOT NULL,
+			content_author_user_id INTEGER NOT NULL,
+			reason TEXT NOT NULL,
+			note TEXT NOT NULL,
+			status TEXT NOT NULL,
+			route_to_roles TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			closed_at INTEGER,
+			closed_by INTEGER,
+			closed_by_role TEXT NOT NULL DEFAULT '',
+			decision_reason TEXT NOT NULL DEFAULT '',
+			decision_note TEXT NOT NULL DEFAULT '',
+			linked_previous_decision_id INTEGER,
+			FOREIGN KEY(reporter_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(content_author_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(closed_by) REFERENCES users(id) ON DELETE SET NULL
+		)
+		`,
+		`
+		CREATE TABLE IF NOT EXISTS moderation_appeals (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			target_type TEXT NOT NULL,
+			target_id INTEGER NOT NULL,
+			requester_user_id INTEGER NOT NULL,
+			target_role TEXT NOT NULL,
+			status TEXT NOT NULL,
+			note TEXT NOT NULL,
+			source_history_id INTEGER NOT NULL,
+			linked_previous_decision_id INTEGER,
+			created_at INTEGER NOT NULL,
+			closed_at INTEGER,
+			closed_by INTEGER,
+			closed_by_role TEXT NOT NULL DEFAULT '',
+			decision_note TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY(closed_by) REFERENCES users(id) ON DELETE SET NULL
+		)
+		`,
+		`
+		CREATE TABLE IF NOT EXISTS moderation_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			acted_at INTEGER NOT NULL,
+			action_type TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id INTEGER NOT NULL,
+			content_author_user_id INTEGER NOT NULL DEFAULT 0,
+			content_author_name TEXT NOT NULL DEFAULT '',
+			actor_user_id INTEGER NOT NULL DEFAULT 0,
+			actor_username TEXT NOT NULL DEFAULT '',
+			actor_display_name TEXT NOT NULL DEFAULT '',
+			actor_role TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			current_status TEXT NOT NULL DEFAULT '',
+			route_to_role TEXT NOT NULL DEFAULT '',
+			linked_previous_decision_id INTEGER,
+			post_title_snapshot TEXT NOT NULL DEFAULT '',
+			post_body_snapshot TEXT NOT NULL DEFAULT '',
+			comment_body_snapshot TEXT NOT NULL DEFAULT ''
+		)
+		`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureDMReadStateTable(db *sql.DB) error {
@@ -511,6 +738,29 @@ func ensureAuthIndexes(db *sql.DB) error {
 	return nil
 }
 
+func ensureModerationIndexes(db *sql.DB) error {
+	statements := []string{
+		`CREATE INDEX IF NOT EXISTS idx_users_role ON users(role, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_posts_under_review_created_at ON posts(is_under_review, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_posts_deleted_at ON posts(deleted_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_deleted_at ON comments(deleted_at, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_role_requests_status_created_at ON moderation_role_requests(status, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_role_requests_requested_role_status ON moderation_role_requests(requested_role, status, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_status_created_at ON moderation_reports(status, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_reporter_status ON moderation_reports(reporter_user_id, status, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_appeals_status_created_at ON moderation_appeals(status, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_appeals_requester_status ON moderation_appeals(requester_user_id, status, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_history_acted_at ON moderation_history(acted_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_history_target ON moderation_history(target_type, target_id, acted_at DESC, id DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {
 	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
 	if err != nil {
@@ -538,16 +788,97 @@ func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {
 	return false, rows.Err()
 }
 
-func seedCategories(ctx context.Context, db *sql.DB, categories []string) error {
-	for _, name := range categories {
-		if strings.TrimSpace(name) == "" {
+func seedCategories(ctx context.Context, db *sql.DB, categories []categorySeed) error {
+	for _, category := range categories {
+		code := strings.TrimSpace(category.Code)
+		name := strings.TrimSpace(category.Name)
+		if code == "" || name == "" {
 			continue
 		}
-		if _, err := db.ExecContext(ctx, "INSERT OR IGNORE INTO categories(name) VALUES (?)", name); err != nil {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO categories(code, name, is_system)
+			VALUES (?, ?, ?)
+			ON CONFLICT(code) DO UPDATE SET
+				name = excluded.name,
+				is_system = CASE
+					WHEN categories.code = 'other' THEN 1
+					ELSE categories.is_system
+				END
+		`, code, name, boolToInt(category.IsSystem)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func backfillCategoryCodes(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, name, code FROM categories ORDER BY id ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type item struct {
+		id   int64
+		name string
+		code sql.NullString
+	}
+	var items []item
+	for rows.Next() {
+		var value item
+		if err := rows.Scan(&value.id, &value.name, &value.code); err != nil {
+			return err
+		}
+		items = append(items, value)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	used := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		code := strings.TrimSpace(item.code.String)
+		if code != "" {
+			used[code] = struct{}{}
+		}
+	}
+
+	for _, item := range items {
+		if strings.TrimSpace(item.code.String) != "" {
+			continue
+		}
+		code := categoryCodeFromName(item.name)
+		if code == "" {
+			code = fmt.Sprintf("category-%d", item.id)
+		}
+		original := code
+		suffix := 1
+		for {
+			if _, exists := used[code]; !exists {
+				break
+			}
+			code = fmt.Sprintf("%s-%d", original, suffix)
+			suffix++
+		}
+		used[code] = struct{}{}
+		if _, err := db.Exec(`UPDATE categories SET code = ? WHERE id = ?`, code, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func categoryCodeFromName(name string) string {
+	name = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(name)), "-"))
+	name = strings.ReplaceAll(name, "--", "-")
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return ""
+	}
+	if name == "other" {
+		return "other"
+	}
+	return name
 }
 
 func usersHaveCaseInsensitiveDuplicateEmails(db *sql.DB) (bool, error) {

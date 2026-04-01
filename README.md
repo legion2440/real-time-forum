@@ -219,6 +219,83 @@ mkcert -cert-file certs/dev-cert.pem -key-file certs/dev-key.pem 127.0.0.1 local
 cp .env.example .env
 ```
 
+## Moderation and Roles
+
+The forum now supports five roles:
+
+- `guest`: read-only
+- `user`: posts, comments, reactions, reports
+- `moderator`: moderation queue, soft delete, escalation reports
+- `admin`: moderator approvals, direct moderator role actions, categories, hard delete
+- `owner`: single top-level staff account, admin approvals, delete protection, history purge
+
+Staff badges currently shown in profile, posts and comments:
+
+- `owner`
+- `admin`
+- `moder`
+
+### First owner bootstrap
+
+Owner is never auto-created during normal server startup.
+
+Create the first owner explicitly:
+
+```bash
+go run ./cmd/server bootstrap-owner --email owner@example.com --username owner --password secret
+```
+
+Optional custom DB path:
+
+```bash
+go run ./cmd/server bootstrap-owner --db ./forum.db --email owner@example.com --username owner --password secret
+```
+
+Rules:
+
+- bootstrap works only while there is no existing `admin` or `owner`
+- bootstrap creates exactly one `owner`
+- UI does not transfer ownership and does not demote owner
+
+### Moderation flow
+
+- New posts are public immediately, but marked `visible + under_review`
+- `under_review` is visible to everyone on the post UI
+- approving a post removes it from the moderation queue and stores `approved_by` / `approved_at`
+- editing an already approved post does not re-queue it automatically
+- comments skip the under-review queue and are moderated through reports
+
+Delete / restore / appeal semantics:
+
+- moderator/admin/owner can soft delete posts and comments
+- admin/owner can hard delete
+- owner can toggle post delete protection
+- protected posts cannot be soft-deleted or hard-deleted until protection is removed
+- users see soft-deleted posts/comments as `[deleted]`
+- moderators can restore only content they soft-deleted themselves
+- admin/owner can restore any saved soft-deleted content
+- content authors can submit appeals on moderation decisions; moderator decisions route to admin, admin decisions route to owner
+
+Reports:
+
+- users report to moderator + admin + owner
+- moderators report upward to admin + owner
+- closing a report removes it from the active queue for the remaining recipients
+
+Categories:
+
+- system category `other` always exists
+- `other` is stable in DB and cannot be deleted
+- deleting any other category moves its posts into `other`
+
+### Unified center
+
+Moderation/admin UI stays inside the existing `/center` SPA:
+
+- `Notifications`: All, Deleted, My reports, Appeals
+- `Moderation`: Under review, Reports, History
+- `Management`: Requests, Roles, Categories, Journal
+
 5. Загрузите переменные окружения в текущую shell-сессию и запустите сервер:
 ```bash
 set -a

@@ -71,6 +71,7 @@ type repositories struct {
 	privateMessages repo.PrivateMessageRepo
 	attachments     repo.AttachmentRepo
 	center          repo.CenterRepo
+	moderation      repo.ModerationRepo
 }
 
 type services struct {
@@ -79,6 +80,7 @@ type services struct {
 	privateMessages *service.PrivateMessageService
 	center          *service.CenterService
 	attachments     *service.AttachmentService
+	moderation      *service.ModerationService
 	hub             *realtimews.Hub
 }
 
@@ -289,6 +291,7 @@ func buildRepositories(db *sql.DB) repositories {
 		privateMessages: sqlite.NewPrivateMessageRepo(db),
 		attachments:     sqlite.NewAttachmentRepo(db),
 		center:          sqlite.NewCenterRepo(db),
+		moderation:      sqlite.NewModerationRepo(db),
 	}
 }
 
@@ -319,6 +322,7 @@ func buildServices(repos repositories, uploadDir string) (services, error) {
 	centerService := service.NewCenterService(repos.center, repos.users, repos.posts, repos.comments, appClock, notificationPublisher)
 	postService := service.NewPostService(repos.posts, repos.comments, repos.categories, repos.reactions, attachmentService, appClock, centerService)
 	privateMessageService := service.NewPrivateMessageService(repos.users, repos.privateMessages, attachmentService, appClock, centerService)
+	moderationService := service.NewModerationService(repos.users, repos.posts, repos.comments, repos.categories, repos.moderation, appClock, centerService)
 
 	return services{
 		auth:            authService,
@@ -326,6 +330,7 @@ func buildServices(repos repositories, uploadDir string) (services, error) {
 		privateMessages: privateMessageService,
 		center:          centerService,
 		attachments:     attachmentService,
+		moderation:      moderationService,
 		hub:             hub,
 	}, nil
 }
@@ -342,6 +347,7 @@ func buildHTTPSServer(services services, addr, webDir, certFile, keyFile string,
 		services.privateMessages,
 		services.center,
 		services.attachments,
+		services.moderation,
 		services.hub,
 		security,
 	)

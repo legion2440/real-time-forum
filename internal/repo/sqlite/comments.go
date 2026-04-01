@@ -50,7 +50,7 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 	var sb strings.Builder
 	args := []any{postID}
 	sb.WriteString(`
-		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at, c.deleted_at,
+		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, u.role, c.body, c.created_at, c.deleted_at, c.deleted_body, c.deleted_by, c.deleted_by_role,
 		       COALESCE(SUM(CASE WHEN cr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN cr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes
 		FROM comments c
@@ -66,7 +66,7 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 		}
 	}
 	sb.WriteString(`
-		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at, c.deleted_at
+		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, u.role, c.body, c.created_at, c.deleted_at, c.deleted_body, c.deleted_by, c.deleted_by_role
 		ORDER BY c.created_at ASC
 	`)
 
@@ -84,7 +84,11 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 		var deletedAt sql.NullInt64
 		var authorUsername string
 		var authorDisplayName sql.NullString
-		if err := rows.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &authorDisplayName, &c.Body, &created, &deletedAt, &c.Likes, &c.Dislikes); err != nil {
+		var authorRole string
+		var deletedBody string
+		var deletedBy sql.NullInt64
+		var deletedByRole sql.NullString
+		if err := rows.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &authorDisplayName, &authorRole, &c.Body, &created, &deletedAt, &deletedBody, &deletedBy, &deletedByRole, &c.Likes, &c.Dislikes); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
@@ -94,12 +98,20 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 			deleted := unixToTime(deletedAt.Int64)
 			c.DeletedAt = &deleted
 		}
+		role := domain.NormalizeUserRole(authorRole)
 		c.Author = domain.UserRef{
 			ID:          c.UserID,
 			Username:    authorUsername,
 			DisplayName: strings.TrimSpace(authorDisplayName.String),
+			Role:        role,
+			Badges:      domain.StaffBadgesForRole(role),
 		}
 		c.CreatedAt = unixToTime(created)
+		c.DeletedBody = strings.TrimSpace(deletedBody)
+		if deletedBy.Valid && deletedBy.Int64 > 0 {
+			c.DeletedByUserID = &deletedBy.Int64
+		}
+		c.DeletedByRole = domain.NormalizeUserRole(strings.TrimSpace(deletedByRole.String))
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -110,14 +122,14 @@ func (r *CommentRepo) ListByPost(ctx context.Context, postID int64, filter domai
 
 func (r *CommentRepo) GetByID(ctx context.Context, id int64) (*domain.Comment, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at, c.deleted_at,
+		SELECT c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, u.role, c.body, c.created_at, c.deleted_at, c.deleted_body, c.deleted_by, c.deleted_by_role,
 		       COALESCE(SUM(CASE WHEN cr.value = 1 THEN 1 ELSE 0 END), 0) AS likes,
 		       COALESCE(SUM(CASE WHEN cr.value = -1 THEN 1 ELSE 0 END), 0) AS dislikes
 		FROM comments c
 		JOIN users u ON u.id = c.user_id
 		LEFT JOIN comment_reactions cr ON cr.comment_id = c.id
 		WHERE c.id = ?
-		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, c.body, c.created_at, c.deleted_at
+		GROUP BY c.id, c.post_id, c.parent_id, c.user_id, u.username, u.display_name, u.role, c.body, c.created_at, c.deleted_at, c.deleted_body, c.deleted_by, c.deleted_by_role
 	`, id)
 
 	var c domain.Comment
@@ -126,7 +138,11 @@ func (r *CommentRepo) GetByID(ctx context.Context, id int64) (*domain.Comment, e
 	var deletedAt sql.NullInt64
 	var authorUsername string
 	var authorDisplayName sql.NullString
-	if err := row.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &authorDisplayName, &c.Body, &created, &deletedAt, &c.Likes, &c.Dislikes); err != nil {
+	var authorRole string
+	var deletedBody string
+	var deletedBy sql.NullInt64
+	var deletedByRole sql.NullString
+	if err := row.Scan(&c.ID, &c.PostID, &parentID, &c.UserID, &authorUsername, &authorDisplayName, &authorRole, &c.Body, &created, &deletedAt, &deletedBody, &deletedBy, &deletedByRole, &c.Likes, &c.Dislikes); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, repo.ErrNotFound
 		}
@@ -139,12 +155,20 @@ func (r *CommentRepo) GetByID(ctx context.Context, id int64) (*domain.Comment, e
 		deleted := unixToTime(deletedAt.Int64)
 		c.DeletedAt = &deleted
 	}
+	role := domain.NormalizeUserRole(authorRole)
 	c.Author = domain.UserRef{
 		ID:          c.UserID,
 		Username:    authorUsername,
 		DisplayName: strings.TrimSpace(authorDisplayName.String),
+		Role:        role,
+		Badges:      domain.StaffBadgesForRole(role),
 	}
 	c.CreatedAt = unixToTime(created)
+	c.DeletedBody = strings.TrimSpace(deletedBody)
+	if deletedBy.Valid && deletedBy.Int64 > 0 {
+		c.DeletedByUserID = &deletedBy.Int64
+	}
+	c.DeletedByRole = domain.NormalizeUserRole(strings.TrimSpace(deletedByRole.String))
 	return &c, nil
 }
 
@@ -205,12 +229,39 @@ func (r *CommentRepo) HasActiveThreadComments(ctx context.Context, rootID int64)
 	return marker == 1, nil
 }
 
-func (r *CommentRepo) SoftDelete(ctx context.Context, id int64, deletedAt time.Time) error {
+func (r *CommentRepo) SoftDelete(ctx context.Context, id int64, deletedAt time.Time, actorUserID int64, actorRole domain.UserRole) error {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE comments
-		SET body = ?, deleted_at = ?
+		SET deleted_body = CASE WHEN deleted_body = '' THEN body ELSE deleted_body END,
+		    body = ?,
+		    deleted_at = ?,
+		    deleted_by = ?,
+		    deleted_by_role = ?
 		WHERE id = ? AND deleted_at IS NULL
-	`, "[deleted]", timeToUnix(deletedAt), id)
+	`, "[deleted]", timeToUnix(deletedAt), actorUserID, strings.TrimSpace(string(actorRole)), id)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
+func (r *CommentRepo) Restore(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE comments
+		SET body = CASE WHEN deleted_body <> '' THEN deleted_body ELSE body END,
+		    deleted_body = '',
+		    deleted_at = NULL,
+		    deleted_by = NULL,
+		    deleted_by_role = ''
+		WHERE id = ? AND deleted_at IS NOT NULL
+	`, id)
 	if err != nil {
 		return err
 	}

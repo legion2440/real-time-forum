@@ -70,10 +70,10 @@ func TestCommentRepo_ListByPostHidesFullyDeletedThread(t *testing.T) {
 		t.Fatalf("create reply comment: %v", err)
 	}
 
-	if err := comments.SoftDelete(ctx, rootID, now.Add(2*time.Second)); err != nil {
+	if err := comments.SoftDelete(ctx, rootID, now.Add(2*time.Second), userID, domain.RoleUser); err != nil {
 		t.Fatalf("soft delete root: %v", err)
 	}
-	if err := comments.SoftDelete(ctx, replyID, now.Add(3*time.Second)); err != nil {
+	if err := comments.SoftDelete(ctx, replyID, now.Add(3*time.Second), userID, domain.RoleUser); err != nil {
 		t.Fatalf("soft delete reply: %v", err)
 	}
 

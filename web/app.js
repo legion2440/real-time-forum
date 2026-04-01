@@ -16,8 +16,11 @@ const TYPING_SCOPE_DM = "dm";
 const TYPING_SCOPE_POST = "post";
 const TYPING_STATUS_START = "start";
 const TYPING_STATUS_STOP = "stop";
-const CENTER_NOTIFICATION_BUCKETS = ["dm", "my_content", "subscriptions"];
+const CENTER_NOTIFICATION_BUCKETS = ["all", "deleted", "reports", "appeals"];
+const CENTER_MODERATION_TABS = ["queue", "reports", "history"];
+const CENTER_MANAGEMENT_TABS = ["requests", "roles", "categories", "journal"];
 const CENTER_DM_PREVIEW_LIMIT = 5;
+const MODERATION_REASONS = ["irrelevant", "obscene", "illegal", "insulting", "other"];
 
 const state = {
   user: null,
@@ -79,6 +82,10 @@ function createEmptyCenterState() {
       dm: 0,
       myContent: 0,
       subscriptions: 0,
+      deleted: 0,
+      reports: 0,
+      appeals: 0,
+      management: 0,
     },
     activityLoaded: false,
     activity: {
@@ -98,6 +105,37 @@ function createEmptyCenterState() {
       };
       return acc;
     }, {}),
+    myReportsLoaded: false,
+    myReportsLoading: false,
+    myReports: [],
+    appealsLoaded: false,
+    appealsLoading: false,
+    appeals: [],
+    appealInboxLoaded: false,
+    appealInboxLoading: false,
+    appealInbox: [],
+    moderation: {
+      queueLoaded: false,
+      queueLoading: false,
+      queue: [],
+      reportsLoaded: false,
+      reportsLoading: false,
+      reports: [],
+      historyLoaded: false,
+      historyLoading: false,
+      history: [],
+    },
+    management: {
+      requestsLoaded: false,
+      requestsLoading: false,
+      requests: [],
+      categoriesLoaded: false,
+      categoriesLoading: false,
+      categories: [],
+      journalLoaded: false,
+      journalLoading: false,
+      journal: [],
+    },
   };
 }
 
@@ -163,6 +201,124 @@ function getDisplayNameOrUsername(profile) {
   const displayName = getDisplayName(profile);
   const username = normalizeUsername(profile && profile.username);
   return displayName || username || "user";
+}
+
+function normalizeRole(value) {
+  switch (String(value || "").trim().toLowerCase()) {
+    case "guest":
+      return "guest";
+    case "moderator":
+      return "moderator";
+    case "admin":
+      return "admin";
+    case "owner":
+      return "owner";
+    case "user":
+    default:
+      return "user";
+  }
+}
+
+function normalizeBadges(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => String(entry || "").trim().toLowerCase())
+    .filter((entry, index, items) => entry && items.indexOf(entry) === index);
+}
+
+function getCurrentUserRole() {
+  return normalizeRole(state.user && state.user.role);
+}
+
+function getRoleLevel(role) {
+  switch (normalizeRole(role)) {
+    case "owner":
+      return 4;
+    case "admin":
+      return 3;
+    case "moderator":
+      return 2;
+    case "user":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function isStaffRole(role) {
+  return getRoleLevel(role) >= 2;
+}
+
+function isAdminRole(role) {
+  return getRoleLevel(role) >= 3;
+}
+
+function isOwnerRole(role) {
+  return normalizeRole(role) === "owner";
+}
+
+function humanizeRole(role) {
+  switch (normalizeRole(role)) {
+    case "moderator":
+      return "Moderator";
+    case "admin":
+      return "Admin";
+    case "owner":
+      return "Owner";
+    case "guest":
+      return "Guest";
+    default:
+      return "User";
+  }
+}
+
+function getUserRole(entity) {
+  if (!entity || typeof entity !== "object") return "user";
+  if (entity.author && typeof entity.author === "object" && entity.author.role) {
+    return normalizeRole(entity.author.role);
+  }
+  return normalizeRole(entity.role);
+}
+
+function getUserBadges(entity) {
+  if (!entity || typeof entity !== "object") return [];
+  if (entity.author && typeof entity.author === "object" && Array.isArray(entity.author.badges)) {
+    return normalizeBadges(entity.author.badges);
+  }
+  return normalizeBadges(entity.badges);
+}
+
+function renderStaffBadges(badges) {
+  const items = normalizeBadges(badges);
+  if (!items.length) return "";
+  return `
+    <span class="staff-badge-row">
+      ${items
+        .map((badge) => `<span class="staff-badge staff-badge-${escapeHTML(badge)}">${escapeHTML(badge)}</span>`)
+        .join("")}
+    </span>
+  `;
+}
+
+function truncateInline(value, maxLength) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text || !Number.isFinite(maxLength) || maxLength <= 0 || text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 3)).trimEnd()}...`;
+}
+
+function normalizePersonRecord(user) {
+  if (!user || typeof user !== "object") return null;
+  const id = normalizeUserID(user.id);
+  const username = normalizeUsername(user.username);
+  if (!id && !username) return null;
+  return {
+    ...user,
+    id: id || normalizeUserID(user.user_id),
+    username,
+    displayName: String(user.displayName ?? user.display_name ?? "").trim(),
+    role: normalizeRole(user.role),
+    badges: normalizeBadges(user.badges),
+  };
 }
 
 function normalizeAttachment(attachment) {
@@ -273,17 +429,25 @@ function setDMPeerUnreadCount(peerID, unreadCount) {
 
 function normalizeNotificationSummary(value) {
   if (!value || typeof value !== "object") {
-    return { total: 0, dm: 0, myContent: 0, subscriptions: 0 };
+    return { total: 0, dm: 0, myContent: 0, subscriptions: 0, deleted: 0, reports: 0, appeals: 0, management: 0 };
   }
   const total = Math.max(0, Math.trunc(Number(value.total ?? value.Total ?? 0) || 0));
   const dm = Math.max(0, Math.trunc(Number(value.dm ?? value.DM ?? 0) || 0));
   const myContent = Math.max(0, Math.trunc(Number(value.myContent ?? value.my_content ?? value.MyContent ?? 0) || 0));
   const subscriptions = Math.max(0, Math.trunc(Number(value.subscriptions ?? value.Subscriptions ?? 0) || 0));
+  const deleted = Math.max(0, Math.trunc(Number(value.deleted ?? value.Deleted ?? 0) || 0));
+  const reports = Math.max(0, Math.trunc(Number(value.reports ?? value.Reports ?? 0) || 0));
+  const appeals = Math.max(0, Math.trunc(Number(value.appeals ?? value.Appeals ?? 0) || 0));
+  const management = Math.max(0, Math.trunc(Number(value.management ?? value.Management ?? 0) || 0));
   return {
     total,
     dm,
     myContent,
     subscriptions,
+    deleted,
+    reports,
+    appeals,
+    management,
   };
 }
 
@@ -296,12 +460,14 @@ function setNotificationSummary(summary) {
 function getNotificationBucketUnreadCount(bucket) {
   const summary = state.center && state.center.summary ? state.center.summary : normalizeNotificationSummary();
   switch (String(bucket || "").trim()) {
-    case "dm":
-      return Number(summary.dm || 0);
-    case "my_content":
-      return Number(summary.myContent || 0);
-    case "subscriptions":
-      return Number(summary.subscriptions || 0);
+    case "all":
+      return Number(summary.total || 0);
+    case "deleted":
+      return Number(summary.deleted || 0);
+    case "reports":
+      return Number(summary.reports || 0);
+    case "appeals":
+      return Number(summary.appeals || 0);
     default:
       return 0;
   }
@@ -1571,6 +1737,207 @@ function renderNotice(msg) {
   return `<div class="notice-box">${escapeHTML(msg)}</div>`;
 }
 
+function closeAppModal() {
+  const modal = document.getElementById("app-modal-root");
+  if (modal) modal.remove();
+}
+
+function showFormModal({ title = "Dialog", description = "", fields = [], submitLabel = "Submit", cancelLabel = "Cancel" } = {}) {
+  closeAppModal();
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.id = "app-modal-root";
+    modal.className = "modal-overlay";
+    modal.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
+        <div class="modal-head">
+          <h2 id="app-modal-title">${escapeHTML(title)}</h2>
+          <button class="icon-btn icon-btn-plain" type="button" data-modal-close aria-label="Close">x</button>
+        </div>
+        ${description ? `<p class="modal-copy">${escapeHTML(description)}</p>` : ""}
+        <form class="form-stack" data-modal-form>
+          ${fields
+            .map((field) => {
+              const type = String(field.type || "text").trim();
+              const name = String(field.name || "").trim();
+              const label = String(field.label || name).trim();
+              const value = field.value == null ? "" : String(field.value);
+              const required = field.required ? "required" : "";
+              const maxLength = Number.isFinite(field.maxLength) && field.maxLength > 0 ? `maxlength="${field.maxLength}"` : "";
+              if (type === "select") {
+                return `
+                  <label class="field">
+                    <span>${escapeHTML(label)}</span>
+                    <select name="${escapeHTML(name)}" ${required}>
+                      ${(Array.isArray(field.options) ? field.options : [])
+                        .map((option) => {
+                          const optionValue = String(option && option.value ? option.value : "").trim();
+                          const optionLabel = String(option && option.label ? option.label : optionValue).trim();
+                          return `<option value="${escapeHTML(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHTML(optionLabel)}</option>`;
+                        })
+                        .join("")}
+                    </select>
+                  </label>
+                `;
+              }
+              if (type === "textarea") {
+                return `
+                  <label class="field">
+                    <span>${escapeHTML(label)}</span>
+                    <textarea name="${escapeHTML(name)}" ${required} ${maxLength}>${escapeHTML(value)}</textarea>
+                  </label>
+                `;
+              }
+              if (type === "checkbox-group") {
+                const selected = Array.isArray(field.value) ? field.value.map((entry) => String(entry).trim()) : [];
+                return `
+                  <fieldset class="field modal-checkbox-group">
+                    <span>${escapeHTML(label)}</span>
+                    <div class="category-grid">
+                      ${(Array.isArray(field.options) ? field.options : [])
+                        .map((option) => {
+                          const optionValue = String(option && option.value ? option.value : "").trim();
+                          const optionLabel = String(option && option.label ? option.label : optionValue).trim();
+                          return `
+                            <label class="check-chip">
+                              <input type="checkbox" name="${escapeHTML(name)}" value="${escapeHTML(optionValue)}" ${selected.includes(optionValue) ? "checked" : ""} />
+                              <span>${escapeHTML(optionLabel)}</span>
+                            </label>
+                          `;
+                        })
+                        .join("")}
+                    </div>
+                  </fieldset>
+                `;
+              }
+              return `
+                <label class="field">
+                  <span>${escapeHTML(label)}</span>
+                  <input type="${escapeHTML(type)}" name="${escapeHTML(name)}" value="${escapeHTML(value)}" ${required} ${maxLength} />
+                </label>
+              `;
+            })
+            .join("")}
+          <div class="form-actions">
+            <button class="btn btn-primary" type="submit">${escapeHTML(submitLabel)}</button>
+            <button class="btn btn-ghost" type="button" data-modal-cancel>${escapeHTML(cancelLabel)}</button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    const finish = (value) => {
+      closeAppModal();
+      resolve(value);
+    };
+
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) finish(null);
+    });
+    modal.querySelectorAll("[data-modal-close], [data-modal-cancel]").forEach((button) => {
+      button.addEventListener("click", () => finish(null));
+    });
+    const form = modal.querySelector("[data-modal-form]");
+    if (form) {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        const values = {};
+        fields.forEach((field) => {
+          if (String(field.type || "").trim() === "checkbox-group") {
+            values[field.name] = data.getAll(field.name).map((entry) => String(entry || "").trim()).filter(Boolean);
+            return;
+          }
+          values[field.name] = String(data.get(field.name) || "").trim();
+        });
+        finish(values);
+      });
+    }
+
+    document.body.appendChild(modal);
+    const firstInput = modal.querySelector("input, textarea, select, button");
+    if (firstInput instanceof HTMLElement) {
+      requestAnimationFrame(() => firstInput.focus());
+    }
+  });
+}
+
+async function showConfirmModal({ title = "Confirm", description = "", confirmLabel = "Confirm", cancelLabel = "Cancel" } = {}) {
+  return showFormModal({ title, description, fields: [], submitLabel: confirmLabel, cancelLabel });
+}
+
+function moderationReasonOptions() {
+  return MODERATION_REASONS.map((reason) => ({ value: reason, label: reason.replace(/_/g, " ") }));
+}
+
+async function showReasonNoteModal({
+  title = "Submit",
+  description = "",
+  submitLabel = "Submit",
+  noteLabel = "Note",
+  defaultReason = MODERATION_REASONS[0],
+  defaultNote = "",
+  reasonLabel = "Reason",
+} = {}) {
+  const values = await showFormModal({
+    title,
+    description,
+    submitLabel,
+    fields: [
+      {
+        type: "select",
+        name: "reason",
+        label: reasonLabel,
+        required: true,
+        value: defaultReason,
+        options: moderationReasonOptions(),
+      },
+      {
+        type: "textarea",
+        name: "note",
+        label: noteLabel,
+        required: true,
+        maxLength: 2000,
+        value: defaultNote,
+      },
+    ],
+  });
+  if (!values) return null;
+  return {
+    reason: String(values.reason || "").trim(),
+    note: String(values.note || "").trim(),
+  };
+}
+
+async function showNoteModal({
+  title = "Submit",
+  description = "",
+  submitLabel = "Submit",
+  noteLabel = "Note",
+  defaultNote = "",
+  required = true,
+} = {}) {
+  const values = await showFormModal({
+    title,
+    description,
+    submitLabel,
+    fields: [
+      {
+        type: "textarea",
+        name: "note",
+        label: noteLabel,
+        required,
+        maxLength: 2000,
+        value: defaultNote,
+      },
+    ],
+  });
+  if (!values) return null;
+  return {
+    note: String(values.note || "").trim(),
+  };
+}
+
 function syncNotificationButton() {
   const button = document.querySelector("[data-action='open-notifications']");
   if (!button) return;
@@ -2063,6 +2430,122 @@ function isDeletedComment(comment) {
   return Boolean(comment && (comment.deleted_at || comment.deletedAt));
 }
 
+function isDeletedPost(post) {
+  return Boolean(post && (post.deleted_at || post.deletedAt));
+}
+
+function isUnderReviewPost(post) {
+  return Boolean(post && (post.under_review || post.underReview));
+}
+
+function isProtectedPost(post) {
+  return Boolean(post && (post.delete_protected || post.deleteProtected));
+}
+
+function renderContentFlags(flags) {
+  const items = Array.isArray(flags) ? flags.filter(Boolean) : [];
+  if (!items.length) return "";
+  return `
+    <div class="content-flag-row">
+      ${items.map((flag) => `<span class="content-flag">${escapeHTML(flag)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function renderPostFlags(post) {
+  const flags = [];
+  if (isUnderReviewPost(post)) flags.push("under review");
+  if (isDeletedPost(post)) flags.push("[deleted]");
+  if (isProtectedPost(post)) flags.push("protected");
+  if (post && post.approved_at) flags.push("approved");
+  return renderContentFlags(flags);
+}
+
+function renderCommentFlags(comment) {
+  const flags = [];
+  if (isDeletedComment(comment)) flags.push("[deleted]");
+  return renderContentFlags(flags);
+}
+
+function renderPostModerationActions(post, { compact = false } = {}) {
+  if (!post) return "";
+  const role = getCurrentUserRole();
+  const buttonClass = compact ? "btn btn-ghost btn-compact" : "action-pill action-pill-muted";
+  const actions = [];
+  if (state.user && !isDeletedPost(post)) {
+    actions.push(`<button class="${buttonClass}" type="button" data-action="open-report-modal" data-target-type="post" data-target-id="${escapeHTML(String(post.id))}">Report</button>`);
+  }
+  if (isCurrentUserOwner(post) && isDeletedPost(post)) {
+    actions.push(`<button class="${buttonClass}" type="button" data-action="open-appeal-modal" data-target-type="post" data-target-id="${escapeHTML(String(post.id))}">Appeal</button>`);
+  }
+  if (state.user && isStaffRole(role)) {
+    if (isUnderReviewPost(post)) {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="queue-approve-post" data-post-id="${escapeHTML(String(post.id))}">Approve</button>`);
+    }
+    if (!isDeletedPost(post)) {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="open-soft-delete-modal" data-target-type="post" data-target-id="${escapeHTML(String(post.id))}">Soft delete</button>`);
+    } else {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="restore-content" data-target-type="post" data-target-id="${escapeHTML(String(post.id))}">Restore</button>`);
+    }
+    if ((role === "admin" || role === "owner") && !isDeletedPost(post)) {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="edit-post-categories" data-post-id="${escapeHTML(String(post.id))}">Change categories</button>`);
+    }
+    if (role === "admin" || role === "owner") {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="open-hard-delete-modal" data-target-type="post" data-target-id="${escapeHTML(String(post.id))}">Hard delete</button>`);
+    }
+    if (role === "owner" && !isDeletedPost(post)) {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="toggle-delete-protection" data-post-id="${escapeHTML(String(post.id))}" data-next-protected="${isProtectedPost(post) ? "0" : "1"}">${isProtectedPost(post) ? "Remove protection" : "Protect from delete"}</button>`);
+    }
+  }
+  if (!actions.length) return "";
+  return `<div class="action-row action-row-secondary">${actions.join("")}</div>`;
+}
+
+function renderCommentModerationActions(comment, { compact = false } = {}) {
+  if (!comment) return "";
+  const role = getCurrentUserRole();
+  const buttonClass = compact ? "btn btn-ghost btn-compact" : "action-pill action-pill-muted";
+  const actions = [];
+  if (state.user && !isDeletedComment(comment)) {
+    actions.push(`<button class="${buttonClass}" type="button" data-action="open-report-modal" data-target-type="comment" data-target-id="${escapeHTML(String(comment.id))}">Report</button>`);
+  }
+  if (isCurrentUserOwner(comment) && isDeletedComment(comment)) {
+    actions.push(`<button class="${buttonClass}" type="button" data-action="open-appeal-modal" data-target-type="comment" data-target-id="${escapeHTML(String(comment.id))}">Appeal</button>`);
+  }
+  if (state.user && isStaffRole(role)) {
+    if (!isDeletedComment(comment)) {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="open-soft-delete-modal" data-target-type="comment" data-target-id="${escapeHTML(String(comment.id))}">Soft delete</button>`);
+    } else {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="restore-content" data-target-type="comment" data-target-id="${escapeHTML(String(comment.id))}">Restore</button>`);
+    }
+    if (role === "admin" || role === "owner") {
+      actions.push(`<button class="${buttonClass}" type="button" data-action="open-hard-delete-modal" data-target-type="comment" data-target-id="${escapeHTML(String(comment.id))}">Hard delete</button>`);
+    }
+  }
+  if (!actions.length) return "";
+  return `<div class="action-row action-row-secondary">${actions.join("")}</div>`;
+}
+
+function renderProfileRoleActions(profile, isSelf) {
+  if (!profile) return "";
+  const viewerRole = getCurrentUserRole();
+  const targetActions = !isSelf ? getAvailableRoleActions(profile.role, profile.id) : [];
+  const selfActions = [];
+  if (isSelf) {
+    if (normalizeRole(profile.role) === "user") {
+      selfActions.push(`<button class="btn btn-ghost btn-compact" type="button" data-action="request-role" data-requested-role="moderator">Request moderator</button>`);
+    } else if (normalizeRole(profile.role) === "moderator") {
+      selfActions.push(`<button class="btn btn-ghost btn-compact" type="button" data-action="request-role" data-requested-role="admin">Request admin</button>`);
+    }
+  }
+  const directActions = targetActions.map((action) => `
+    <button class="btn btn-ghost btn-compact" type="button" data-action="change-user-role" data-user-id="${escapeHTML(String(profile.id))}" data-next-role="${escapeHTML(action.role)}">${escapeHTML(action.label)}</button>
+  `);
+  const buttons = [...selfActions, ...directActions];
+  if (!buttons.length || (!isSelf && !isAdminRole(viewerRole))) return "";
+  return `<div class="profile-actions">${buttons.join("")}</div>`;
+}
+
 function getActiveCommentReply(postID) {
   const pending = state.pendingCommentReply;
   if (!pending || !postID) return null;
@@ -2097,6 +2580,7 @@ function renderPostCard(post) {
           <div class="author-meta">
             <div class="author-meta-row">
               <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
+              ${renderStaffBadges(getUserBadges(post))}
               ${
                 categoriesMarkup
                   ? `
@@ -2109,6 +2593,7 @@ function renderPostCard(post) {
             <div class="meta-line">${escapeHTML(formatDate(post.created_at))}</div>
           </div>
         </div>
+        ${renderPostFlags(post)}
         <p class="post-card-body">${escapeHTML(post.body)}</p>
         ${attachmentMarkup ? `<div class="post-card-media">${attachmentMarkup}</div>` : ""}
         <div class="action-row" data-post="${post.id}">
@@ -2118,6 +2603,7 @@ function renderPostCard(post) {
           ${isOwner ? `<a class="action-pill" data-link href="/post/${post.id}?edit=1">Edit</a>` : ""}
           ${isOwner ? `<button class="action-pill" type="button" data-action="delete-post" data-post-id="${escapeHTML(String(post.id))}">Delete</button>` : ""}
         </div>
+        ${renderPostModerationActions(post)}
       </div>
       <div class="post-card-side">
         <button class="post-side-btn post-side-menu" type="button" data-action="under-construction" aria-label="More actions">
@@ -2484,7 +2970,7 @@ async function ensureUser(force = false) {
 
   const previousUserID = normalizeUserID(state.user && state.user.id);
   try {
-    state.user = await apiFetch("/api/me");
+    state.user = normalizePersonRecord(await apiFetch("/api/me"));
   } catch (_) {
     clearAuthenticatedState();
     return;
@@ -2542,7 +3028,7 @@ async function ensureNotificationSummary(force = false) {
     const summary = await apiFetch("/api/center/summary");
     setNotificationSummary(summary);
   } catch (_) {
-    setNotificationSummary({ total: 0, dm: 0, myContent: 0, subscriptions: 0 });
+    setNotificationSummary({ total: 0, dm: 0, myContent: 0, subscriptions: 0, deleted: 0, reports: 0, appeals: 0, management: 0 });
   }
 }
 
@@ -2583,11 +3069,14 @@ async function ensureUsersLoaded(force = false) {
     const users = (await apiFetch("/api/users")) || [];
     state.users = Array.isArray(users)
       ? users
-          .map((user) => ({
-            id: normalizeUserID(user && user.id),
-            username: normalizeUsername(user && user.username),
-            name: String(user && user.name ? user.name : "").trim(),
-          }))
+          .map((user) => {
+            const normalized = normalizePersonRecord(user);
+            if (!normalized) return null;
+            return {
+              ...normalized,
+              name: String(user && user.name ? user.name : normalized.displayName || normalized.username).trim(),
+            };
+          })
           .filter((user) => user.id)
       : [];
     state.usersLoaded = true;
@@ -2670,6 +3159,21 @@ function getNotificationBucketState(bucket) {
   return state.center.notifications[normalizedBucket];
 }
 
+function centerNotificationAPIBucket(bucket) {
+  switch (String(bucket || "").trim()) {
+    case "all":
+      return "";
+    case "deleted":
+      return "deleted";
+    case "reports":
+      return "reports";
+    case "appeals":
+      return "appeals";
+    default:
+      return "";
+  }
+}
+
 async function loadCenterNotifications(bucket, { force = false, append = false } = {}) {
   const normalizedBucket = String(bucket || "").trim();
   const bucketState = getNotificationBucketState(normalizedBucket);
@@ -2687,7 +3191,13 @@ async function loadCenterNotifications(bucket, { force = false, append = false }
   bucketState.loading = true;
   const offset = append ? bucketState.items.length : 0;
   try {
-    const response = await apiFetch(`/api/center/notifications?bucket=${encodeURIComponent(normalizedBucket)}&limit=20&offset=${offset}`);
+    const apiBucket = centerNotificationAPIBucket(normalizedBucket);
+    const qs = new URLSearchParams({
+      limit: "20",
+      offset: String(offset),
+    });
+    if (apiBucket) qs.set("bucket", apiBucket);
+    const response = await apiFetch(`/api/center/notifications?${qs.toString()}`);
     const items = Array.isArray(response && response.items) ? response.items.map(normalizeNotificationItem).filter(Boolean) : [];
     bucketState.items = append ? [...bucketState.items, ...items] : items;
     bucketState.hasMore = Boolean(response && response.hasMore);
@@ -2700,6 +3210,171 @@ async function loadCenterNotifications(bucket, { force = false, append = false }
   }
 }
 
+async function loadMyReports(force = false) {
+  if (!state.user) {
+    state.center.myReportsLoaded = false;
+    state.center.myReports = [];
+    return;
+  }
+  if (state.center.myReportsLoading) return;
+  if (state.center.myReportsLoaded && !force) return;
+  state.center.myReportsLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/reports?mine=1");
+    state.center.myReports = Array.isArray(items) ? items : [];
+    state.center.myReportsLoaded = true;
+  } finally {
+    state.center.myReportsLoading = false;
+  }
+}
+
+async function loadMyAppeals(force = false) {
+  if (!state.user) {
+    state.center.appealsLoaded = false;
+    state.center.appeals = [];
+    state.center.appealInboxLoaded = false;
+    state.center.appealInbox = [];
+    return;
+  }
+  if (state.center.appealsLoading) return;
+  if (state.center.appealsLoaded && !force) return;
+  state.center.appealsLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/appeals?mine=1");
+    state.center.appeals = Array.isArray(items) ? items : [];
+    state.center.appealsLoaded = true;
+  } finally {
+    state.center.appealsLoading = false;
+  }
+}
+
+async function loadAppealInbox(force = false) {
+  if (!state.user || !isAdminRole(getCurrentUserRole())) {
+    state.center.appealInboxLoaded = false;
+    state.center.appealInbox = [];
+    return;
+  }
+  if (state.center.appealInboxLoading) return;
+  if (state.center.appealInboxLoaded && !force) return;
+  state.center.appealInboxLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/appeals?status=pending");
+    state.center.appealInbox = Array.isArray(items) ? items : [];
+    state.center.appealInboxLoaded = true;
+  } finally {
+    state.center.appealInboxLoading = false;
+  }
+}
+
+async function loadModerationQueue(force = false) {
+  if (!state.user || !isStaffRole(getCurrentUserRole())) {
+    state.center.moderation.queueLoaded = false;
+    state.center.moderation.queue = [];
+    return;
+  }
+  if (state.center.moderation.queueLoading) return;
+  if (state.center.moderation.queueLoaded && !force) return;
+  state.center.moderation.queueLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/queue");
+    state.center.moderation.queue = Array.isArray(items) ? items : [];
+    state.center.moderation.queueLoaded = true;
+  } finally {
+    state.center.moderation.queueLoading = false;
+  }
+}
+
+async function loadModerationReports(force = false) {
+  if (!state.user || !isStaffRole(getCurrentUserRole())) {
+    state.center.moderation.reportsLoaded = false;
+    state.center.moderation.reports = [];
+    return;
+  }
+  if (state.center.moderation.reportsLoading) return;
+  if (state.center.moderation.reportsLoaded && !force) return;
+  state.center.moderation.reportsLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/reports?status=pending");
+    state.center.moderation.reports = Array.isArray(items) ? items : [];
+    state.center.moderation.reportsLoaded = true;
+  } finally {
+    state.center.moderation.reportsLoading = false;
+  }
+}
+
+async function loadModerationHistory(force = false) {
+  if (!state.user || !isStaffRole(getCurrentUserRole())) {
+    state.center.moderation.historyLoaded = false;
+    state.center.moderation.history = [];
+    return;
+  }
+  if (state.center.moderation.historyLoading) return;
+  if (state.center.moderation.historyLoaded && !force) return;
+  state.center.moderation.historyLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/history");
+    state.center.moderation.history = Array.isArray(items) ? items : [];
+    state.center.moderation.historyLoaded = true;
+  } finally {
+    state.center.moderation.historyLoading = false;
+  }
+}
+
+async function loadManagementRequests(force = false) {
+  if (!state.user || !isAdminRole(getCurrentUserRole())) {
+    state.center.management.requestsLoaded = false;
+    state.center.management.requests = [];
+    return;
+  }
+  if (state.center.management.requestsLoading) return;
+  if (state.center.management.requestsLoaded && !force) return;
+  state.center.management.requestsLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/requests");
+    state.center.management.requests = Array.isArray(items) ? items : [];
+    state.center.management.requestsLoaded = true;
+  } finally {
+    state.center.management.requestsLoading = false;
+  }
+}
+
+async function loadManagementCategories(force = false) {
+  if (!state.user || !isAdminRole(getCurrentUserRole())) {
+    state.center.management.categoriesLoaded = false;
+    state.center.management.categories = [];
+    return;
+  }
+  if (state.center.management.categoriesLoading) return;
+  if (state.center.management.categoriesLoaded && !force) return;
+  state.center.management.categoriesLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/categories");
+    state.center.management.categories = Array.isArray(items) ? items : [];
+    state.center.management.categoriesLoaded = true;
+    state.categories = state.center.management.categories;
+  } finally {
+    state.center.management.categoriesLoading = false;
+  }
+}
+
+async function loadManagementJournal(force = false) {
+  if (!state.user || !isAdminRole(getCurrentUserRole())) {
+    state.center.management.journalLoaded = false;
+    state.center.management.journal = [];
+    return;
+  }
+  if (state.center.management.journalLoading) return;
+  if (state.center.management.journalLoaded && !force) return;
+  state.center.management.journalLoading = true;
+  try {
+    const items = await apiFetch("/api/moderation/history");
+    state.center.management.journal = Array.isArray(items) ? items : [];
+    state.center.management.journalLoaded = true;
+  } finally {
+    state.center.management.journalLoading = false;
+  }
+}
+
 function upsertNotificationItem(item, { prepend = false } = {}) {
   const normalizedItem = normalizeNotificationItem(item);
   if (!normalizedItem) return;
@@ -2708,9 +3383,17 @@ function upsertNotificationItem(item, { prepend = false } = {}) {
   const existingIndex = bucketState.items.findIndex((entry) => normalizeUserID(entry && entry.id) === normalizedItem.id);
   if (existingIndex >= 0) {
     bucketState.items[existingIndex] = normalizedItem;
-    return;
+  } else {
+    bucketState.items = prepend ? [normalizedItem, ...bucketState.items] : [...bucketState.items, normalizedItem];
   }
-  bucketState.items = prepend ? [normalizedItem, ...bucketState.items] : [...bucketState.items, normalizedItem];
+
+  const allState = getNotificationBucketState("all");
+  const allIndex = allState.items.findIndex((entry) => normalizeUserID(entry && entry.id) === normalizedItem.id);
+  if (allIndex >= 0) {
+    allState.items[allIndex] = normalizedItem;
+  } else {
+    allState.items = prepend ? [normalizedItem, ...allState.items] : [...allState.items, normalizedItem];
+  }
 }
 
 function replaceNotificationItem(item) {
@@ -2718,8 +3401,14 @@ function replaceNotificationItem(item) {
   if (!normalizedItem) return;
   const bucketState = getNotificationBucketState(normalizedItem.bucket);
   const existingIndex = bucketState.items.findIndex((entry) => normalizeUserID(entry && entry.id) === normalizedItem.id);
-  if (existingIndex < 0) return;
-  bucketState.items[existingIndex] = normalizedItem;
+  if (existingIndex >= 0) {
+    bucketState.items[existingIndex] = normalizedItem;
+  }
+  const allState = getNotificationBucketState("all");
+  const allIndex = allState.items.findIndex((entry) => normalizeUserID(entry && entry.id) === normalizedItem.id);
+  if (allIndex >= 0) {
+    allState.items[allIndex] = normalizedItem;
+  }
 }
 
 function isMessageForPeer(message, peerID) {
@@ -3102,65 +3791,118 @@ async function loadPosts() {
 
 function getCenterTab() {
   const tab = String(getSearchParam("tab") || "").trim().toLowerCase();
-  return tab === "notifications" ? "notifications" : "activity";
+  if (tab === "moderation" && isStaffRole(getCurrentUserRole())) return "moderation";
+  if (tab === "management" && isAdminRole(getCurrentUserRole())) return "management";
+  if (tab === "activity") return "activity";
+  return "notifications";
 }
 
-function getCenterSubtab() {
-  const subtab = String(getSearchParam("subtab") || "").trim().toLowerCase();
-  if (CENTER_NOTIFICATION_BUCKETS.includes(subtab)) return subtab;
-  return "dm";
-}
-
-function getCenterTabPath(tab, subtab = getCenterSubtab()) {
-  if (tab === "notifications") {
-    return `/center?tab=notifications&subtab=${encodeURIComponent(subtab || "dm")}`;
+function centerSubtabsForTab(tab) {
+  switch (tab) {
+    case "notifications":
+      return CENTER_NOTIFICATION_BUCKETS;
+    case "moderation":
+      return isStaffRole(getCurrentUserRole()) ? CENTER_MODERATION_TABS : [];
+    case "management":
+      return isAdminRole(getCurrentUserRole()) ? CENTER_MANAGEMENT_TABS : [];
+    default:
+      return [];
   }
-  return "/center?tab=activity";
+}
+
+function getCenterSubtab(tab = getCenterTab()) {
+  const subtab = String(getSearchParam("subtab") || "").trim().toLowerCase();
+  const subtabs = centerSubtabsForTab(tab);
+  if (subtabs.includes(subtab)) return subtab;
+  return subtabs[0] || "";
+}
+
+function getCenterTabPath(tab, subtab = getCenterSubtab(tab)) {
+  const params = new URLSearchParams();
+  params.set("tab", tab || "notifications");
+  if (subtab) params.set("subtab", subtab);
+  return `/center?${params.toString()}`;
 }
 
 function getPreferredNotificationBucket() {
-  if (getNotificationBucketUnreadCount("dm") > 0) return "dm";
-  if (getNotificationBucketUnreadCount("my_content") > 0) return "my_content";
-  if (getNotificationBucketUnreadCount("subscriptions") > 0) return "subscriptions";
-  return "dm";
+  if (getNotificationBucketUnreadCount("deleted") > 0) return "deleted";
+  if (getNotificationBucketUnreadCount("reports") > 0) return "reports";
+  if (getNotificationBucketUnreadCount("appeals") > 0) return "appeals";
+  return "all";
 }
 
 function renderCenterTabs(activeTab) {
+  const tabs = [{ key: "notifications", label: "Notifications" }];
+  if (isStaffRole(getCurrentUserRole())) tabs.push({ key: "moderation", label: "Moderation" });
+  if (isAdminRole(getCurrentUserRole())) tabs.push({ key: "management", label: "Management" });
+  tabs.push({ key: "activity", label: "Activity" });
+
   return `
     <div class="center-tabs" role="tablist" aria-label="Center tabs">
-      <a class="center-tab ${activeTab === "activity" ? "is-active" : ""}" data-link href="${escapeHTML(getCenterTabPath("activity"))}" role="tab" aria-selected="${activeTab === "activity" ? "true" : "false"}">Activity</a>
-      <a class="center-tab ${activeTab === "notifications" ? "is-active" : ""}" data-link href="${escapeHTML(getCenterTabPath("notifications", getCenterSubtab()))}" role="tab" aria-selected="${activeTab === "notifications" ? "true" : "false"}">Notifications</a>
+      ${tabs
+        .map(
+          (tab) => `
+            <a class="center-tab ${activeTab === tab.key ? "is-active" : ""}" data-link href="${escapeHTML(getCenterTabPath(tab.key))}" role="tab" aria-selected="${activeTab === tab.key ? "true" : "false"}">${escapeHTML(tab.label)}</a>
+          `
+        )
+        .join("")}
     </div>
   `;
 }
 
 function getNotificationBucketLabel(bucket) {
   switch (bucket) {
-    case "dm":
-      return "DM";
-    case "my_content":
-      return "My content";
-    case "subscriptions":
-      return "Subscriptions";
+    case "all":
+      return "All";
+    case "deleted":
+      return "Deleted";
+    case "reports":
+      return "My reports";
+    case "appeals":
+      return "Appeals";
     default:
       return "Notifications";
   }
 }
 
-function renderNotificationSubtabs(activeBucket) {
+function getCenterSubtabLabel(tab, subtab) {
+  if (tab === "notifications") return getNotificationBucketLabel(subtab);
+  switch (subtab) {
+    case "queue":
+      return "Under review";
+    case "reports":
+      return "Reports";
+    case "history":
+      return "History";
+    case "requests":
+      return "Requests";
+    case "roles":
+      return "Roles";
+    case "categories":
+      return "Categories";
+    case "journal":
+      return "Journal";
+    default:
+      return subtab || tab;
+  }
+}
+
+function renderCenterSubtabs(activeTab, activeSubtab) {
+  const subtabs = centerSubtabsForTab(activeTab);
+  if (!subtabs.length) return "";
   return `
-    <div class="center-subtabs" role="tablist" aria-label="Notification tabs">
-      ${CENTER_NOTIFICATION_BUCKETS.map((bucket) => {
-        const unread = getNotificationBucketUnreadCount(bucket);
+    <div class="center-subtabs" role="tablist" aria-label="Center subtabs">
+      ${subtabs.map((subtab) => {
+        const unread = activeTab === "notifications" ? getNotificationBucketUnreadCount(subtab) : 0;
         return `
           <a
-            class="center-subtab ${activeBucket === bucket ? "is-active" : ""}"
+            class="center-subtab ${activeSubtab === subtab ? "is-active" : ""}"
             data-link
-            href="${escapeHTML(getCenterTabPath("notifications", bucket))}"
+            href="${escapeHTML(getCenterTabPath(activeTab, subtab))}"
             role="tab"
-            aria-selected="${activeBucket === bucket ? "true" : "false"}"
+            aria-selected="${activeSubtab === subtab ? "true" : "false"}"
           >
-            <span>${escapeHTML(getNotificationBucketLabel(bucket))}</span>
+            <span>${escapeHTML(getCenterSubtabLabel(activeTab, subtab))}</span>
             ${unread > 0 ? `<span class="center-badge">${escapeHTML(String(unread))}</span>` : ""}
           </a>
         `;
@@ -3186,20 +3928,107 @@ function renderCenterNotificationItem(item) {
         </div>
         ${metaMarkup}
         <div class="center-item-actions">
-          ${item.isRead ? `<span class="center-status-label" aria-label="Status: seen">Status: seen</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="notification-read" data-notification-id="${escapeHTML(item.id)}">Mark as read</button>`}
+          ${item.isRead ? `<span class="center-status-label">Seen</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="notification-read" data-notification-id="${escapeHTML(item.id)}">Mark as read</button>`}
         </div>
       </div>
     </article>
   `;
 }
 
-function formatCenterDMPeerPreview(peer) {
-  if (!peer) return "";
-  const body = String(peer.lastMessagePreview || "").trim();
+function moderationTargetLink(target) {
+  if (!target || typeof target !== "object") return "";
+  const postID = normalizeUserID(target.postId ?? target.post_id ?? "");
+  const commentID = normalizeUserID(target.commentId ?? target.comment_id ?? "");
+  if (postID && commentID) return `/post/${postID}#comment-${commentID}`;
+  if (postID) return `/post/${postID}`;
+  if (target.targetType === "post" && target.targetId) return `/post/${target.targetId}`;
+  return "";
   const attachmentLabel = peer.lastMessageHasAttachment ? (body ? " • attachment" : "Attachment") : "";
   if (!body) return attachmentLabel;
   const prefix = normalizeUserID(peer.lastMessageFromUserID) === getCurrentUserID() ? "You: " : "";
   return `${prefix}${body}${attachmentLabel}`;
+}
+
+function renderModerationTargetPreview(target, { titleLimit = 80, bodyLimit = 160 } = {}) {
+  if (!target || typeof target !== "object") return `<div class="center-item-body">No target snapshot.</div>`;
+  const title = truncateInline(target.postTitle, titleLimit);
+  const body = truncateInline(target.commentBody || target.postBody, bodyLimit);
+  const linkPath = moderationTargetLink(target);
+  return `
+    <div class="center-target-preview">
+      ${title ? (linkPath ? `<a class="center-item-link" data-link href="${escapeHTML(linkPath)}">${escapeHTML(title)}</a>` : `<strong>${escapeHTML(title)}</strong>`) : ""}
+      ${body ? `<div class="center-item-body">${escapeHTML(body)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderCenterStatusPill(value) {
+  const label = String(value || "").trim() || "pending";
+  return `<span class="center-status-label center-status-pill">${escapeHTML(label.replace(/_/g, " "))}</span>`;
+}
+
+function renderHistoryDetails(item) {
+  const previewNote = truncateInline(item.note, 120);
+  const previewTitle = truncateInline(item.postTitleSnapshot, 80);
+  const previewPostBody = truncateInline(item.postBodySnapshot, 160);
+  const previewCommentBody = truncateInline(item.commentBodySnapshot, 160);
+  if (![item.note, item.postTitleSnapshot, item.postBodySnapshot, item.commentBodySnapshot].some(Boolean)) return "";
+  return `
+    <details class="center-inline-details">
+      <summary>Expand details</summary>
+      ${item.postTitleSnapshot ? `<div><strong>Post title:</strong> ${escapeHTML(previewTitle)}</div>` : ""}
+      ${item.postBodySnapshot ? `<div><strong>Post body:</strong> ${escapeHTML(previewPostBody)}</div>` : ""}
+      ${item.commentBodySnapshot ? `<div><strong>Comment body:</strong> ${escapeHTML(previewCommentBody)}</div>` : ""}
+      ${item.note ? `<div><strong>Note:</strong> ${escapeHTML(previewNote)}</div>` : ""}
+    </details>
+  `;
+}
+
+function renderReportCard(report, { mine = false, staff = false } = {}) {
+  if (!report) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>${escapeHTML(String(report.reason || "report").replace(/_/g, " "))}</strong>
+        <span class="center-item-meta">${escapeHTML(formatDate(report.createdAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        ${renderCenterStatusPill(report.status)}
+        <span>Target: ${escapeHTML(report.target && report.target.targetType ? report.target.targetType : "content")}</span>
+        ${mine ? "" : `<span>Reporter: ${escapeHTML(getDisplayNameOrUsername(report.reporter || {}))}</span>`}
+      </div>
+      ${renderModerationTargetPreview(report.target)}
+      ${report.note ? `<div class="center-item-body">${escapeHTML(truncateInline(report.note, 160))}</div>` : ""}
+      <div class="center-item-actions">
+        ${report.target && moderationTargetLink(report.target) ? `<a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(moderationTargetLink(report.target))}">Open content</a>` : ""}
+        ${staff && String(report.status) === "pending" ? `<button class="btn btn-primary btn-compact" type="button" data-action="staff-report-action" data-report-id="${escapeHTML(String(report.id))}" data-report-mode="action">Action taken</button>` : ""}
+        ${staff && String(report.status) === "pending" ? `<button class="btn btn-ghost btn-compact" type="button" data-action="staff-report-action" data-report-id="${escapeHTML(String(report.id))}" data-report-mode="dismiss">Dismiss</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderAppealCard(appeal, { reviewer = false } = {}) {
+  if (!appeal) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>Appeal to ${escapeHTML(humanizeRole(appeal.targetRole))}</strong>
+        <span class="center-item-meta">${escapeHTML(formatDate(appeal.createdAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        ${renderCenterStatusPill(appeal.status)}
+        <span>Requester: ${escapeHTML(getDisplayNameOrUsername(appeal.requester || {}))}</span>
+      </div>
+      ${renderModerationTargetPreview(appeal.target)}
+      ${appeal.note ? `<div class="center-item-body">${escapeHTML(truncateInline(appeal.note, 160))}</div>` : ""}
+      <div class="center-item-actions">
+        ${appeal.target && moderationTargetLink(appeal.target) ? `<a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(moderationTargetLink(appeal.target))}">Open content</a>` : ""}
+        ${reviewer && String(appeal.status) === "pending" ? `<button class="btn btn-primary btn-compact" type="button" data-action="staff-appeal-action" data-appeal-id="${escapeHTML(String(appeal.id))}" data-appeal-mode="reverse">Reverse decision</button>` : ""}
+        ${reviewer && String(appeal.status) === "pending" ? `<button class="btn btn-ghost btn-compact" type="button" data-action="staff-appeal-action" data-appeal-id="${escapeHTML(String(appeal.id))}" data-appeal-mode="uphold">Uphold decision</button>` : ""}
+      </div>
+    </article>
+  `;
 }
 
 function renderCenterDMPeerItem(peer) {
@@ -3230,26 +4059,145 @@ function renderCenterDMPeerItem(peer) {
   `;
 }
 
+function moderationTargetLink(target) {
+  if (!target || typeof target !== "object") return "";
+  const postID = normalizeUserID(target.postId ?? target.post_id ?? "");
+  const commentID = normalizeUserID(target.commentId ?? target.comment_id ?? "");
+  if (postID && commentID) return `/post/${postID}#comment-${commentID}`;
+  if (postID) return `/post/${postID}`;
+  if (target.targetType === "post" && target.targetId) return `/post/${target.targetId}`;
+  return "";
+}
+
+function formatCenterDMPeerPreview(peer) {
+  const body = String(peer && peer.lastMessageBody ? peer.lastMessageBody : "").trim();
+  const attachmentLabel = peer && peer.lastMessageHasAttachment ? (body ? " • attachment" : "Attachment") : "";
+  if (!body) return attachmentLabel;
+  const prefix = normalizeUserID(peer.lastMessageFromUserID) === getCurrentUserID() ? "You: " : "";
+  return `${prefix}${body}${attachmentLabel}`;
+}
+
+function renderHistoryDetails(item) {
+  const previewNote = truncateInline(item.note, 120);
+  const previewTitle = truncateInline(item.postTitleSnapshot, 80);
+  const previewPostBody = truncateInline(item.postBodySnapshot, 160);
+  const previewCommentBody = truncateInline(item.commentBodySnapshot, 160);
+  if (![item.note, item.postTitleSnapshot, item.postBodySnapshot, item.commentBodySnapshot].some(Boolean)) return "";
+  return `
+    <details class="center-inline-details">
+      <summary>${escapeHTML([previewTitle, previewPostBody, previewCommentBody, previewNote].filter(Boolean)[0] || "Expand details")}</summary>
+      ${item.postTitleSnapshot ? `<div><strong>Post title:</strong> ${escapeHTML(item.postTitleSnapshot)}</div>` : ""}
+      ${item.postBodySnapshot ? `<div><strong>Post body:</strong> ${escapeHTML(item.postBodySnapshot)}</div>` : ""}
+      ${item.commentBodySnapshot ? `<div><strong>Comment body:</strong> ${escapeHTML(item.commentBodySnapshot)}</div>` : ""}
+      ${item.note ? `<div><strong>Note:</strong> ${escapeHTML(item.note)}</div>` : ""}
+    </details>
+  `;
+}
+
+function renderReportCard(report, { mine = false, staff = false } = {}) {
+  if (!report) return "";
+  const targetLink = moderationTargetLink(report.target);
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>${escapeHTML(String(report.reason || "report").replace(/_/g, " "))}</strong>
+        <span class="center-item-meta">${escapeHTML(formatDate(report.createdAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        ${renderCenterStatusPill(report.status)}
+        <span>Target: ${escapeHTML(report.target && report.target.targetType ? report.target.targetType : "content")}</span>
+        ${mine ? "" : `<span>Reporter: ${escapeHTML(getDisplayNameOrUsername(report.reporter || {}))}</span>`}
+      </div>
+      ${renderModerationTargetPreview(report.target)}
+      ${report.note ? `<div class="center-item-body">${escapeHTML(truncateInline(report.note, 160))}</div>` : ""}
+      ${report.decisionNote ? `<div class="center-item-body">Decision: ${escapeHTML(truncateInline(report.decisionNote, 160))}</div>` : ""}
+      <div class="center-item-actions">
+        ${targetLink ? `<a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(targetLink)}">Open content</a>` : ""}
+        ${staff && String(report.status) === "pending" ? `<button class="btn btn-primary btn-compact" type="button" data-action="staff-report-action" data-report-id="${escapeHTML(String(report.id))}" data-report-mode="action">Action taken</button>` : ""}
+        ${staff && String(report.status) === "pending" ? `<button class="btn btn-ghost btn-compact" type="button" data-action="staff-report-action" data-report-id="${escapeHTML(String(report.id))}" data-report-mode="dismiss">Dismiss</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderAppealCard(appeal, { reviewer = false } = {}) {
+  if (!appeal) return "";
+  const targetLink = moderationTargetLink(appeal.target);
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>Appeal to ${escapeHTML(humanizeRole(appeal.targetRole))}</strong>
+        <span class="center-item-meta">${escapeHTML(formatDate(appeal.createdAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        ${renderCenterStatusPill(appeal.status)}
+        <span>Requester: ${escapeHTML(getDisplayNameOrUsername(appeal.requester || {}))}</span>
+        ${reviewer ? "" : `<span>Review level: ${escapeHTML(humanizeRole(appeal.targetRole))}</span>`}
+      </div>
+      ${renderModerationTargetPreview(appeal.target)}
+      ${appeal.note ? `<div class="center-item-body">${escapeHTML(truncateInline(appeal.note, 160))}</div>` : ""}
+      ${appeal.decisionNote ? `<div class="center-item-body">Decision: ${escapeHTML(truncateInline(appeal.decisionNote, 160))}</div>` : ""}
+      <div class="center-item-actions">
+        ${targetLink ? `<a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(targetLink)}">Open content</a>` : ""}
+        ${reviewer && String(appeal.status) === "pending" ? `<button class="btn btn-primary btn-compact" type="button" data-action="staff-appeal-action" data-appeal-id="${escapeHTML(String(appeal.id))}" data-appeal-mode="reverse">Reverse decision</button>` : ""}
+        ${reviewer && String(appeal.status) === "pending" ? `<button class="btn btn-ghost btn-compact" type="button" data-action="staff-appeal-action" data-appeal-id="${escapeHTML(String(appeal.id))}" data-appeal-mode="uphold">Uphold decision</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
 function renderCenterNotificationPanel(activeBucket) {
-  if (activeBucket === "dm") {
-    const allConversationPeers = sortDMPeers(state.dmPeers).filter((peer) => Number(peer && peer.lastMessageAt) > 0);
-    const peers = allConversationPeers.slice(0, CENTER_DM_PREVIEW_LIMIT);
-    const unread = getNotificationBucketUnreadCount(activeBucket);
+  if (activeBucket === "reports") {
+    const items = Array.isArray(state.center.myReports) ? state.center.myReports : [];
     return `
       <section class="surface center-panel">
         <div class="section-row center-panel-head">
           <div>
-            <h2>DM</h2>
-            <p>${unread > 0 ? `${unread} unread` : peers.length ? "Recent conversations" : "All caught up"}</p>
-          </div>
-          <div class="center-panel-actions">
-            ${unread > 0 ? `<button class="btn btn-ghost btn-compact" type="button" data-action="notifications-read-all" data-notification-bucket="dm">Mark all as read</button>` : ""}
+            <h2>My reports</h2>
+            <p>Your submitted reports and their outcomes.</p>
           </div>
         </div>
         <div class="center-list">
-          ${peers.length ? peers.map(renderCenterDMPeerItem).join("") : renderEmpty("No conversations", "Your recent direct message threads will show up here.")}
+          ${items.length ? items.map((item) => renderReportCard(item, { mine: true })).join("") : renderEmpty("No reports", "You have not filed any reports yet.")}
         </div>
-        ${allConversationPeers.length > CENTER_DM_PREVIEW_LIMIT ? `<div class="center-panel-footer"><a class="btn btn-ghost" data-link href="/dm">Open all chats</a></div>` : ""}
+      </section>
+    `;
+  }
+  if (activeBucket === "appeals") {
+    const items = Array.isArray(state.center.appeals) ? state.center.appeals : [];
+    const reviewItems = Array.isArray(state.center.appealInbox) ? state.center.appealInbox : [];
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>Appeals</h2>
+            <p>Your appeals on moderation decisions.</p>
+          </div>
+        </div>
+        ${
+          isAdminRole(getCurrentUserRole())
+            ? `
+              <div class="section-row center-panel-head">
+                <div>
+                  <h3>Incoming appeals</h3>
+                  <p>Pending decisions routed to your staff level.</p>
+                </div>
+              </div>
+              <div class="center-list">
+                ${reviewItems.length ? reviewItems.map((item) => renderAppealCard(item, { reviewer: true })).join("") : renderEmpty("No incoming appeals", "There are no pending appeals routed to your level.")}
+              </div>
+            `
+            : ""
+        }
+        <div class="section-row center-panel-head">
+          <div>
+            <h3>My appeals</h3>
+            <p>Appeals you have already submitted.</p>
+          </div>
+        </div>
+        <div class="center-list">
+          ${items.length ? items.map((item) => renderAppealCard(item)).join("") : renderEmpty("No appeals", "You have not filed any appeals yet.")}
+        </div>
       </section>
     `;
   }
@@ -3335,23 +4283,263 @@ function renderActivitySection(title, subtitle, items, renderer, hasMore) {
   `;
 }
 
-function renderCenterContent(activeTab, activeBucket) {
+function renderQueuePostItem(post) {
+  if (!post) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <a class="center-item-link" data-link href="/post/${escapeHTML(String(post.id))}">${escapeHTML(post.title || "[deleted]")}</a>
+        <span class="center-item-meta">${escapeHTML(formatDate(post.created_at || post.createdAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        ${renderCenterStatusPill(post.under_review ? "under_review" : "visible")}
+        <span>Author: ${escapeHTML(getAuthorDisplay(post))}</span>
+        ${renderStaffBadges(getUserBadges(post))}
+      </div>
+      ${renderPostFlags(post)}
+      <div class="center-item-body">${escapeHTML(truncateInline(post.body, 160) || "")}</div>
+      <div class="center-item-actions">
+        <a class="btn btn-ghost btn-compact" data-link href="/post/${escapeHTML(String(post.id))}">Open</a>
+        <button class="btn btn-primary btn-compact" type="button" data-action="queue-approve-post" data-post-id="${escapeHTML(String(post.id))}">Approve</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderRoleRequestItem(item) {
+  if (!item) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>${escapeHTML(getDisplayNameOrUsername(item.applicant || {}))}</strong>
+        <span class="center-item-meta">${escapeHTML(formatDate(item.createdAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        ${renderCenterStatusPill(item.status)}
+        <span>Requested: ${escapeHTML(humanizeRole(item.requestedRole))}</span>
+      </div>
+      ${item.note ? `<div class="center-item-body">${escapeHTML(truncateInline(item.note, 160))}</div>` : ""}
+      <div class="center-item-actions">
+        <a class="btn btn-ghost btn-compact" data-link href="${escapeHTML(getProfilePath(item.applicant && item.applicant.username))}">Open profile</a>
+        ${String(item.status) === "pending" ? `<button class="btn btn-primary btn-compact" type="button" data-action="review-role-request" data-request-id="${escapeHTML(String(item.id))}" data-request-approve="1">Approve</button>` : ""}
+        ${String(item.status) === "pending" ? `<button class="btn btn-ghost btn-compact" type="button" data-action="review-role-request" data-request-id="${escapeHTML(String(item.id))}" data-request-approve="0">Reject</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function getAvailableRoleActions(targetRole, targetID) {
+  const viewerRole = getCurrentUserRole();
+  const target = normalizeRole(targetRole);
+  if (normalizeUserID(targetID) === getCurrentUserID()) return [];
+  if (viewerRole === "owner") {
+    if (target === "user") return [{ role: "moderator", label: "Promote to moderator" }, { role: "admin", label: "Promote to admin" }];
+    if (target === "moderator") return [{ role: "admin", label: "Promote to admin" }, { role: "user", label: "Demote" }];
+    if (target === "admin") return [{ role: "moderator", label: "Demote" }];
+  }
+  if (viewerRole === "admin") {
+    if (target === "user") return [{ role: "moderator", label: "Promote to moderator" }];
+    if (target === "moderator") return [{ role: "user", label: "Demote moderator" }];
+  }
+  return [];
+}
+
+function renderRoleUserItem(user) {
+  if (!user) return "";
+  const actions = getAvailableRoleActions(user.role, user.id);
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <a class="center-item-link" data-link href="${escapeHTML(getProfilePath(user.username))}">${escapeHTML(user.name || user.username)}</a>
+        <span class="center-item-meta">@${escapeHTML(user.username)}</span>
+      </div>
+      <div class="center-inline-meta">
+        <span>${escapeHTML(humanizeRole(user.role))}</span>
+        ${renderStaffBadges(user.badges)}
+      </div>
+      <div class="center-item-actions">
+        ${actions
+          .map(
+            (action) => `
+              <button class="btn btn-ghost btn-compact" type="button" data-action="change-user-role" data-user-id="${escapeHTML(String(user.id))}" data-next-role="${escapeHTML(action.role)}">${escapeHTML(action.label)}</button>
+            `
+          )
+          .join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderCategoryItem(category) {
+  if (!category) return "";
+  const isSystem = Boolean(category.is_system ?? category.isSystem);
+  const isOther = String(category.code || "").trim() === "other";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>${escapeHTML(category.name || category.code || "category")}</strong>
+        <span class="center-item-meta">${escapeHTML(category.code || "")}</span>
+      </div>
+      <div class="center-inline-meta">
+        <span>${isSystem ? "system" : "custom"}</span>
+      </div>
+      <div class="center-item-actions">
+        ${isOther || isSystem ? `<span class="center-status-label">Protected</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="delete-category" data-category-id="${escapeHTML(String(category.id))}" data-category-name="${escapeHTML(category.name || category.code)}">Delete category</button>`}
+      </div>
+    </article>
+  `;
+}
+
+function renderHistoryItem(item) {
+  if (!item) return "";
+  return `
+    <article class="center-item">
+      <div class="center-item-head">
+        <strong>${escapeHTML(String(item.actionType || "").replace(/_/g, " "))}</strong>
+        <span class="center-item-meta">${escapeHTML(formatDate(item.actedAt))}</span>
+      </div>
+      <div class="center-inline-meta">
+        <span>${escapeHTML(item.targetType || "")} #${escapeHTML(String(item.targetId || ""))}</span>
+        ${item.currentStatus ? renderCenterStatusPill(item.currentStatus) : ""}
+        ${item.actor && item.actor.username ? `<span>by @${escapeHTML(item.actor.username)}</span>` : ""}
+      </div>
+      ${renderHistoryDetails(item)}
+    </article>
+  `;
+}
+
+function renderModerationPanel(activeSubtab) {
+  if (activeSubtab === "queue") {
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>Under Review</h2>
+            <p>Visible posts waiting for staff approval.</p>
+          </div>
+        </div>
+        <div class="center-list">
+          ${(state.center.moderation.queue || []).length ? state.center.moderation.queue.map(renderQueuePostItem).join("") : renderEmpty("Queue is clear", "There are no posts waiting for review.")}
+        </div>
+      </section>
+    `;
+  }
+  if (activeSubtab === "reports") {
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>Reports</h2>
+            <p>Active report queue for your staff role.</p>
+          </div>
+        </div>
+        <div class="center-list">
+          ${(state.center.moderation.reports || []).length ? state.center.moderation.reports.map((item) => renderReportCard(item, { staff: true })).join("") : renderEmpty("No active reports", "The report queue is empty.")}
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="surface center-panel">
+      <div class="section-row center-panel-head">
+        <div>
+          <h2>History</h2>
+          <p>Immutable moderation trail.</p>
+        </div>
+      </div>
+      <div class="center-list">
+        ${(state.center.moderation.history || []).length ? state.center.moderation.history.map(renderHistoryItem).join("") : renderEmpty("No history", "No moderation actions recorded yet.")}
+      </div>
+    </section>
+  `;
+}
+
+function renderManagementPanel(activeSubtab) {
+  if (activeSubtab === "requests") {
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>Requests</h2>
+            <p>Role applications routed to your level.</p>
+          </div>
+        </div>
+        <div class="center-list">
+          ${(state.center.management.requests || []).length ? state.center.management.requests.map(renderRoleRequestItem).join("") : renderEmpty("No requests", "There are no role requests yet.")}
+        </div>
+      </section>
+    `;
+  }
+  if (activeSubtab === "roles") {
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>Roles</h2>
+            <p>Direct role actions apply immediately.</p>
+          </div>
+        </div>
+        <div class="center-list">
+          ${(state.users || []).length ? state.users.map(renderRoleUserItem).join("") : renderEmpty("No users", "No users available.")}
+        </div>
+      </section>
+    `;
+  }
+  if (activeSubtab === "categories") {
+    return `
+      <section class="surface center-panel">
+        <div class="section-row center-panel-head">
+          <div>
+            <h2>Categories</h2>
+            <p>Create categories and move deleted-category posts into other.</p>
+          </div>
+          <div class="center-panel-actions">
+            <button class="btn btn-primary btn-compact" type="button" data-action="create-category">Create category</button>
+          </div>
+        </div>
+        <div class="center-list">
+          ${(state.center.management.categories || []).length ? state.center.management.categories.map(renderCategoryItem).join("") : renderEmpty("No categories", "No categories available.")}
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="surface center-panel">
+      <div class="section-row center-panel-head">
+        <div>
+          <h2>Journal</h2>
+          <p>Audit journal for moderation and management actions.</p>
+        </div>
+        <div class="center-panel-actions">
+          ${isOwnerRole(getCurrentUserRole()) ? `<button class="btn btn-ghost btn-compact" type="button" data-action="purge-history">Purge history</button>` : ""}
+        </div>
+      </div>
+      <div class="center-list">
+        ${(state.center.management.journal || []).length ? state.center.management.journal.map(renderHistoryItem).join("") : renderEmpty("No journal", "No audit items available.")}
+      </div>
+    </section>
+  `;
+}
+
+function renderCenterContent(activeTab, activeSubtab) {
   const activity = state.center.activity || { posts: [], reactions: [], comments: [] };
   return `
     <section class="page-head">
       <div>
         <h1>Center</h1>
-        <p>One place for your activity and incoming notifications.</p>
+        <p>One place for notifications, moderation and management.</p>
       </div>
     </section>
     <section class="center-shell">
       ${renderCenterTabs(activeTab)}
+      ${renderCenterSubtabs(activeTab, activeSubtab)}
       ${
         activeTab === "notifications"
-          ? `
-            ${renderNotificationSubtabs(activeBucket)}
-            ${renderCenterNotificationPanel(activeBucket)}
-          `
+          ? renderCenterNotificationPanel(activeSubtab)
+          : activeTab === "moderation"
+            ? renderModerationPanel(activeSubtab)
+            : activeTab === "management"
+              ? renderManagementPanel(activeSubtab)
           : `
             <div class="center-activity-grid">
               ${renderActivitySection("My posts", "Posts you created.", activity.posts, renderActivityPostItem, activity.postsHasMore)}
@@ -3378,24 +4566,44 @@ async function centerView() {
   }
 
   const activeTab = getCenterTab();
-  const activeBucket = getCenterSubtab();
+  const activeSubtab = getCenterSubtab(activeTab);
 
   await ensureNotificationSummary();
   if (activeTab === "notifications") {
-    if (activeBucket === "dm") {
-      await loadDMPeers(true);
+    if (activeSubtab === "reports") {
+      await loadMyReports(true);
+    } else if (activeSubtab === "appeals") {
+      await loadMyAppeals(true);
+      await loadAppealInbox(true);
     } else {
-      await loadCenterNotifications(activeBucket, { force: true });
+      await loadCenterNotifications(activeSubtab, { force: true });
+    }
+  } else if (activeTab === "moderation") {
+    if (activeSubtab === "queue") {
+      await loadModerationQueue(true);
+    } else if (activeSubtab === "reports") {
+      await loadModerationReports(true);
+    } else {
+      await loadModerationHistory(true);
+    }
+  } else if (activeTab === "management") {
+    await ensureUsersLoaded(true);
+    if (activeSubtab === "requests") {
+      await loadManagementRequests(true);
+    } else if (activeSubtab === "categories") {
+      await loadManagementCategories(true);
+    } else if (activeSubtab === "journal") {
+      await loadManagementJournal(true);
     }
   } else {
-    await loadCenterActivity();
+    await loadCenterActivity(true);
   }
 
   return {
     html: renderLayout({
       mode: "center",
       hideHeading: true,
-      content: renderCenterContent(activeTab, activeBucket),
+      content: renderCenterContent(activeTab, activeSubtab),
     }),
     onMount: () => {
       bindHeaderActions();
@@ -3456,19 +4664,16 @@ function bindCenterActions() {
       try {
         const response = await apiFetch("/api/center/notifications/read-all", {
           method: "POST",
-          body: JSON.stringify({ bucket }),
+          body: JSON.stringify({ bucket: centerNotificationAPIBucket(bucket) }),
         });
-        if (bucket === "dm") {
-          state.dmPeers = sortDMPeers((state.dmPeers || []).map((peer) => ({ ...peer, unreadCount: 0 })));
-          syncDMUnreadCache(
-            (state.dmPeers || []).reduce((acc, peer) => {
-              acc[peer.id] = 0;
-              return acc;
-            }, {})
-          );
-        }
         const bucketState = getNotificationBucketState(bucket);
         bucketState.items = bucketState.items.map((item) => ({ ...item, isRead: true }));
+        if (bucket === "all") {
+          CENTER_NOTIFICATION_BUCKETS.filter((entry) => entry !== "all").forEach((entry) => {
+            const entryState = getNotificationBucketState(entry);
+            entryState.items = entryState.items.map((item) => ({ ...item, isRead: true }));
+          });
+        }
         if (response && response.summary) {
           setNotificationSummary(response.summary);
         }
@@ -3492,6 +4697,610 @@ function bindCenterActions() {
       }
     });
   });
+
+  document.querySelectorAll("[data-action='queue-approve-post']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const postID = button.getAttribute("data-post-id");
+      if (!postID) return;
+      try {
+        await approveQueuedPost(postID);
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to approve post.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='review-role-request']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const requestID = button.getAttribute("data-request-id");
+      const approve = button.getAttribute("data-request-approve") === "1";
+      if (!requestID) return;
+      try {
+        await reviewRoleRequestByID(requestID, approve);
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to review role request.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='change-user-role']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const userID = button.getAttribute("data-user-id");
+      const nextRole = button.getAttribute("data-next-role");
+      if (!userID || !nextRole) return;
+      try {
+        await changeUserRoleByID(userID, nextRole);
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to change user role.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='staff-report-action']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const reportID = button.getAttribute("data-report-id");
+      const mode = button.getAttribute("data-report-mode");
+      if (!reportID || !mode) return;
+      try {
+        await closeReportByID(reportID, mode === "action");
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to review report.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='staff-appeal-action']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const appealID = button.getAttribute("data-appeal-id");
+      const mode = button.getAttribute("data-appeal-mode");
+      if (!appealID || !mode) return;
+      try {
+        await closeAppealByID(appealID, mode === "reverse");
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to review appeal.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='create-category']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await createCategoryFlow();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to create category.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='delete-category']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const categoryID = button.getAttribute("data-category-id");
+      const categoryName = button.getAttribute("data-category-name") || "category";
+      if (!categoryID) return;
+      try {
+        await deleteCategoryFlow(categoryID, categoryName);
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to delete category.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='purge-history']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await purgeHistoryFlow();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to purge history.");
+      }
+    });
+  });
+}
+
+function findPostCategories(post) {
+  if (!post || !Array.isArray(post.categories)) return [];
+  return post.categories
+    .map((entry) => normalizeUserID(entry && entry.id))
+    .filter(Boolean);
+}
+
+async function approveQueuedPost(postID) {
+  const normalizedPostID = normalizeUserID(postID);
+  let post = (state.center.moderation.queue || []).find((entry) => normalizeUserID(entry && entry.id) === normalizedPostID);
+  if (!post && location.pathname.startsWith("/post/")) {
+    post = await apiFetch(`/api/posts/${encodeURIComponent(normalizedPostID)}`);
+  }
+  const viewerRole = getCurrentUserRole();
+  let categoryIDs = [];
+  let note = "";
+  if (viewerRole === "admin" || viewerRole === "owner") {
+    await ensureCategories();
+    const values = await showFormModal({
+      title: "Approve post",
+      description: "Approving removes the post from the review queue. Admin and owner can reassign categories here.",
+      submitLabel: "Approve",
+      fields: [
+        {
+          type: "checkbox-group",
+          name: "categories",
+          label: "Categories",
+          value: post ? findPostCategories(post) : [],
+          options: (state.categories || []).map((category) => ({
+            value: String(category.id),
+            label: category.name,
+          })),
+        },
+        {
+          type: "textarea",
+          name: "note",
+          label: "Note",
+          maxLength: 2000,
+        },
+      ],
+    });
+    if (!values) return;
+    categoryIDs = Array.isArray(values.categories)
+      ? values.categories.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value) && value > 0)
+      : [];
+    if (categoryIDs.length === 0) {
+      throw new Error("Choose at least one category.");
+    }
+    note = String(values.note || "").trim();
+  } else {
+    const values = await showNoteModal({
+      title: "Approve post",
+      description: "Approving removes the post from the review queue.",
+      submitLabel: "Approve",
+      noteLabel: "Note",
+      required: false,
+    });
+    if (values == null) return;
+    note = String(values.note || "").trim();
+  }
+
+  await apiFetch(`/api/moderation/posts/${encodeURIComponent(normalizedPostID)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ categories: categoryIDs, note }),
+  });
+  await ensureCategories();
+  await loadModerationQueue(true);
+  await loadModerationHistory(true);
+  await ensureNotificationSummary(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function reviewRoleRequestByID(requestID, approve) {
+  const confirmed = await showConfirmModal({
+    title: approve ? "Approve request" : "Reject request",
+    description: approve
+      ? "This role change applies immediately."
+      : "Rejecting a role request requires a note.",
+    confirmLabel: approve ? "Approve" : "Continue",
+  });
+  if (!confirmed) return;
+
+  const values = await showNoteModal({
+    title: approve ? "Approval note" : "Rejection note",
+    description: approve ? "Optional note for the applicant." : "Explain why the request was rejected.",
+    submitLabel: approve ? "Approve" : "Reject",
+    noteLabel: "Note",
+    required: !approve,
+  });
+  if (values == null) return;
+
+  await apiFetch(`/api/moderation/requests/${encodeURIComponent(requestID)}/review`, {
+    method: "POST",
+    body: JSON.stringify({
+      approve: Boolean(approve),
+      note: values.note,
+    }),
+  });
+  await ensureUsersLoaded(true);
+  await loadManagementRequests(true);
+  await loadManagementJournal(true);
+  await ensureNotificationSummary(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function changeUserRoleByID(userID, nextRole) {
+  const roleLabel = humanizeRole(nextRole);
+  const confirmed = await showConfirmModal({
+    title: `${String(nextRole) === "user" ? "Demote" : "Change role"}`,
+    description: `This will apply ${roleLabel} immediately.`,
+    confirmLabel: "Continue",
+  });
+  if (!confirmed) return;
+
+  const values = await showNoteModal({
+    title: "Role change note",
+    description: "Confirmation note for the audit trail.",
+    submitLabel: "Apply",
+    noteLabel: "Note",
+    required: false,
+  });
+  if (values == null) return;
+
+  await apiFetch(`/api/moderation/users/${encodeURIComponent(userID)}/role`, {
+    method: "POST",
+    body: JSON.stringify({
+      role: nextRole,
+      note: values.note,
+    }),
+  });
+  await ensureUsersLoaded(true);
+  await ensureUser(true);
+  await loadManagementJournal(true);
+  await ensureNotificationSummary(true);
+  refreshCenterRouteIfOpen();
+  if (location.pathname.startsWith("/u/")) {
+    router();
+  }
+}
+
+async function closeReportByID(reportID, actionTaken) {
+  const values = await showReasonNoteModal({
+    title: actionTaken ? "Close report with action" : "Dismiss report",
+    description: actionTaken
+      ? "Explain what action was taken."
+      : "Explain why this report is being dismissed.",
+    submitLabel: actionTaken ? "Close report" : "Dismiss report",
+    noteLabel: "Decision note",
+    defaultReason: "other",
+  });
+  if (!values) return;
+
+  await apiFetch(`/api/moderation/reports/${encodeURIComponent(reportID)}/review`, {
+    method: "POST",
+    body: JSON.stringify({
+      actionTaken: Boolean(actionTaken),
+      reason: values.reason,
+      note: values.note,
+    }),
+  });
+  await loadModerationReports(true);
+  await loadModerationHistory(true);
+  await loadMyReports(true);
+  await ensureNotificationSummary(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function closeAppealByID(appealID, reverse) {
+  const values = await showNoteModal({
+    title: reverse ? "Reverse decision" : "Uphold decision",
+    description: reverse
+      ? "Leave a note explaining the reversal."
+      : "Leave a note explaining why the original decision stands.",
+    submitLabel: reverse ? "Reverse" : "Uphold",
+    noteLabel: "Decision note",
+    required: true,
+  });
+  if (!values) return;
+
+  await apiFetch(`/api/moderation/appeals/${encodeURIComponent(appealID)}/review`, {
+    method: "POST",
+    body: JSON.stringify({
+      reverse: Boolean(reverse),
+      note: values.note,
+    }),
+  });
+  await loadAppealInbox(true);
+  await loadMyAppeals(true);
+  await loadModerationHistory(true);
+  await loadManagementJournal(true);
+  await ensureNotificationSummary(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function createCategoryFlow() {
+  const values = await showFormModal({
+    title: "Create category",
+    description: "Categories are managed by admin and owner only.",
+    submitLabel: "Create",
+    fields: [
+      {
+        type: "text",
+        name: "name",
+        label: "Name",
+        required: true,
+      },
+    ],
+  });
+  if (!values) return;
+  await apiFetch("/api/moderation/categories", {
+    method: "POST",
+    body: JSON.stringify({ name: values.name }),
+  });
+  await ensureCategories();
+  await loadManagementCategories(true);
+  await loadManagementJournal(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function deleteCategoryFlow(categoryID, categoryName) {
+  const confirmed = await showConfirmModal({
+    title: "Delete category",
+    description: `Posts from ${categoryName} will be moved to other.`,
+    confirmLabel: "Continue",
+  });
+  if (!confirmed) return;
+  const values = await showNoteModal({
+    title: "Delete category",
+    description: "Leave an audit note for this bulk move.",
+    submitLabel: "Delete category",
+    noteLabel: "Note",
+    required: false,
+  });
+  if (values == null) return;
+  await apiFetch(`/api/moderation/categories/${encodeURIComponent(categoryID)}/delete`, {
+    method: "POST",
+    body: JSON.stringify({ note: values.note }),
+  });
+  await ensureCategories();
+  await loadManagementCategories(true);
+  await loadManagementJournal(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function purgeHistoryFlow() {
+  const confirmed = await showConfirmModal({
+    title: "Purge history",
+    description: "This bulk action removes audit records. Continue to choose filters.",
+    confirmLabel: "Continue",
+  });
+  if (!confirmed) return;
+
+  const values = await showFormModal({
+    title: "Purge history",
+    description: "Leave filters blank to purge all matching records.",
+    submitLabel: "Purge",
+    fields: [
+      { type: "text", name: "actionType", label: "Action type", value: "" },
+      { type: "text", name: "targetType", label: "Target type", value: "" },
+      { type: "text", name: "status", label: "Status", value: "" },
+      { type: "datetime-local", name: "from", label: "From", value: "" },
+      { type: "datetime-local", name: "to", label: "To", value: "" },
+      { type: "textarea", name: "note", label: "Note", required: true, maxLength: 2000 },
+    ],
+  });
+  if (!values) return;
+
+  const toRFC3339 = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const date = new Date(text);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  };
+
+  await apiFetch("/api/moderation/history/purge", {
+    method: "POST",
+    body: JSON.stringify({
+      actionType: values.actionType,
+      targetType: values.targetType,
+      status: values.status,
+      from: toRFC3339(values.from),
+      to: toRFC3339(values.to),
+      note: values.note,
+    }),
+  });
+  await loadModerationHistory(true);
+  await loadManagementJournal(true);
+  refreshCenterRouteIfOpen();
+}
+
+async function submitReportFlow(targetType, targetID) {
+  const values = await showReasonNoteModal({
+    title: "Report content",
+    description: "Reports require both a reason and a note.",
+    submitLabel: "Send report",
+    noteLabel: "Note",
+    defaultReason: "other",
+  });
+  if (!values) return false;
+
+  await apiFetch("/api/moderation/reports", {
+    method: "POST",
+    body: JSON.stringify({
+      targetType,
+      targetId: Number.parseInt(String(targetID), 10),
+      reason: values.reason,
+      note: values.note,
+    }),
+  });
+  await loadMyReports(true);
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function submitAppealFlow(targetType, targetID) {
+  const values = await showNoteModal({
+    title: "Appeal decision",
+    description: "Appeals require a note and are routed to the next review level.",
+    submitLabel: "Send appeal",
+    noteLabel: "Appeal note",
+    required: true,
+  });
+  if (!values) return false;
+
+  await apiFetch("/api/moderation/appeals", {
+    method: "POST",
+    body: JSON.stringify({
+      targetType,
+      targetId: Number.parseInt(String(targetID), 10),
+      note: values.note,
+    }),
+  });
+  await loadMyAppeals(true);
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function softDeleteContentFlow(targetType, targetID) {
+  const values = await showReasonNoteModal({
+    title: "Soft delete content",
+    description: "This hides the content for regular users and records an audit entry.",
+    submitLabel: "Soft delete",
+    noteLabel: "Note",
+    defaultReason: "other",
+  });
+  if (!values) return false;
+
+  await apiFetch(`/api/moderation/${targetType === "post" ? "posts" : "comments"}/${encodeURIComponent(targetID)}/soft-delete`, {
+    method: "POST",
+    body: JSON.stringify({
+      reason: values.reason,
+      note: values.note,
+    }),
+  });
+  await loadModerationHistory(true);
+  await loadModerationReports(true);
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function restoreContentFlow(targetType, targetID) {
+  const values = await showNoteModal({
+    title: "Restore content",
+    description: "Restoring makes the saved content visible again.",
+    submitLabel: "Restore",
+    noteLabel: "Note",
+    required: false,
+  });
+  if (values == null) return false;
+
+  await apiFetch(`/api/moderation/${targetType === "post" ? "posts" : "comments"}/${encodeURIComponent(targetID)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ note: values.note }),
+  });
+  await loadModerationHistory(true);
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function hardDeleteContentFlow(targetType, targetID) {
+  const confirmed = await showConfirmModal({
+    title: "Hard delete content",
+    description: "This permanently removes the content.",
+    confirmLabel: "Continue",
+  });
+  if (!confirmed) return false;
+  const values = await showReasonNoteModal({
+    title: "Hard delete content",
+    description: "Leave the reason and note for the audit trail.",
+    submitLabel: "Hard delete",
+    noteLabel: "Note",
+    defaultReason: "other",
+  });
+  if (!values) return false;
+
+  await apiFetch(`/api/moderation/${targetType === "post" ? "posts" : "comments"}/${encodeURIComponent(targetID)}/hard-delete`, {
+    method: "POST",
+    body: JSON.stringify({
+      reason: values.reason,
+      note: values.note,
+    }),
+  });
+  await loadModerationHistory(true);
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function toggleDeleteProtectionFlow(postID, nextProtected) {
+  const values = await showNoteModal({
+    title: nextProtected ? "Protect post" : "Remove protection",
+    description: nextProtected
+      ? "Protected posts cannot be soft-deleted or hard-deleted until protection is removed."
+      : "Removing protection allows delete actions again.",
+    submitLabel: nextProtected ? "Protect" : "Remove protection",
+    noteLabel: "Note",
+    required: false,
+  });
+  if (values == null) return false;
+
+  await apiFetch(`/api/moderation/posts/${encodeURIComponent(postID)}/protection`, {
+    method: "POST",
+    body: JSON.stringify({
+      protected: Boolean(nextProtected),
+      note: values.note,
+    }),
+  });
+  await loadModerationHistory(true);
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function requestRoleFlow(requestedRole) {
+  const values = await showNoteModal({
+    title: `Request ${humanizeRole(requestedRole)}`,
+    description: "Leave a short note for the reviewer.",
+    submitLabel: "Send request",
+    noteLabel: "Note",
+    required: false,
+  });
+  if (values == null) return false;
+
+  await apiFetch("/api/moderation/requests", {
+    method: "POST",
+    body: JSON.stringify({
+      requestedRole,
+      note: values.note,
+    }),
+  });
+  await loadManagementRequests(true).catch(() => {});
+  await ensureNotificationSummary(true);
+  return true;
+}
+
+async function updatePostCategoriesFlow(post) {
+  await ensureCategories();
+  const values = await showFormModal({
+    title: "Change post categories",
+    description: "Admin and owner can reassign categories at any time.",
+    submitLabel: "Save categories",
+    fields: [
+      {
+        type: "checkbox-group",
+        name: "categories",
+        label: "Categories",
+        value: findPostCategories(post),
+        options: (state.categories || []).map((category) => ({
+          value: String(category.id),
+          label: category.name,
+        })),
+      },
+      {
+        type: "textarea",
+        name: "note",
+        label: "Note",
+        maxLength: 2000,
+      },
+    ],
+  });
+  if (!values) return false;
+  const categoryIDs = Array.isArray(values.categories)
+    ? values.categories.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value) && value > 0)
+    : [];
+  if (categoryIDs.length === 0) {
+    throw new Error("Choose at least one category.");
+  }
+
+  await apiFetch(`/api/moderation/posts/${encodeURIComponent(post.id)}/categories`, {
+    method: "POST",
+    body: JSON.stringify({
+      categories: categoryIDs,
+      note: values.note,
+    }),
+  });
+  await ensureCategories();
+  await loadModerationHistory(true);
+  await loadManagementJournal(true);
+  return true;
 }
 
 async function feedView() {
@@ -3660,6 +5469,8 @@ async function profileView(params) {
   const heading = getDisplayNameOrUsername(profile);
   const subtitle = `@${normalizeUsername(profile && profile.username) || routeUsername}`;
   const editableProfile = isSelf ? state.user : profile;
+  const profileRole = normalizeRole(editableProfile && editableProfile.role);
+  const profileBadges = getUserBadges(editableProfile);
   const selfDisplayName = isSelf ? String(state.user && state.user.displayName ? state.user.displayName : "").trim() : String(profile && profile.displayName ? profile.displayName : "").trim();
   const selfFirstName = getProfileFieldValue(editableProfile, "firstName");
   const selfLastName = getProfileFieldValue(editableProfile, "lastName");
@@ -3673,6 +5484,10 @@ async function profileView(params) {
       <div>
         <h1>${escapeHTML(heading)}</h1>
         <p class="profile-handle">${escapeHTML(subtitle)}</p>
+        <div class="profile-role-row">
+          <span class="center-status-label">${escapeHTML(humanizeRole(profileRole))}</span>
+          ${renderStaffBadges(profileBadges)}
+        </div>
       </div>
       ${
         !isSelf && state.user
@@ -3687,6 +5502,7 @@ async function profileView(params) {
       </div>
       ${statusNotice ? renderNotice(statusNotice) : ""}
       ${setupMode ? renderNotice("Complete your profile setup now or skip. You can update these fields later from your profile.") : ""}
+      ${renderProfileRoleActions(editableProfile, isSelf)}
       ${
         isSelf
           ? `
@@ -3723,6 +5539,7 @@ async function profileView(params) {
             <div class="profile-readonly">
               ${renderProfileField("Display name", getDisplayNameOrUsername(profile))}
               ${renderProfileField("Username", subtitle)}
+              ${renderProfileField("Role", humanizeRole(profileRole))}
               ${renderProfileField("First name", getProfileFieldValue(profile, "firstName"))}
               ${renderProfileField("Last name", getProfileFieldValue(profile, "lastName"))}
               ${renderProfileField("Age", getProfileAgeValue(profile))}
@@ -4365,10 +6182,14 @@ function renderComment(comment, { isReply = false, postID = "" } = {}) {
       <div class="author-line">
         ${avatarMarkup(author, comment.avatarUrl, "xs")}
         <div>
-          <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
+          <div class="author-meta-row">
+            <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
+            ${renderStaffBadges(getUserBadges(comment))}
+          </div>
           <div class="meta-line">${escapeHTML(formatDate(comment.created_at))}</div>
         </div>
       </div>
+      ${renderCommentFlags(comment)}
       ${
         isEditing
           ? `
@@ -4398,6 +6219,7 @@ function renderComment(comment, { isReply = false, postID = "" } = {}) {
             </div>
           `
       }
+      ${renderCommentModerationActions(comment)}
       ${
         showInlineReply
           ? `
@@ -4518,6 +6340,7 @@ async function postView(params) {
                 <div class="author-meta">
                   <div class="author-meta-row">
                     <a class="author-name author-link" data-link href="${escapeHTML(getProfilePath(authorUsername))}">${escapeHTML(author)}</a>
+                    ${renderStaffBadges(getUserBadges(post))}
                     ${
                       categoriesMarkup
                         ? `
@@ -4530,6 +6353,7 @@ async function postView(params) {
                   <div class="meta-line">${escapeHTML(formatDate(post.created_at))}</div>
                 </div>
               </div>
+              ${renderPostFlags(post)}
               <p class="hero-body">${escapeHTML(post.body)}</p>
               ${attachmentMarkup ? `<div class="post-detail-media">${attachmentMarkup}</div>` : ""}
               <div class="action-row" data-post="${post.id}">
@@ -4549,6 +6373,7 @@ async function postView(params) {
                 ${isOwner ? `<a class="action-pill" data-link href="/post/${post.id}?edit=1">Edit</a>` : ""}
                 ${isOwner ? `<button class="action-pill" type="button" data-action="delete-post" data-post-id="${escapeHTML(String(post.id))}">Delete</button>` : ""}
               </div>
+              ${renderPostModerationActions(post)}
             </div>
             <div class="hero-main-side">
               <button class="post-side-btn post-side-menu" type="button" data-action="under-construction" aria-label="More actions">
@@ -4915,6 +6740,202 @@ document.addEventListener("click", (e) => {
     return;
   }
 
+  const reportButton = e.target.closest("[data-action='open-report-modal']");
+  if (reportButton) {
+    e.preventDefault();
+    if (!state.user) {
+      alert("Login to send a report.");
+      return;
+    }
+    const targetType = reportButton.getAttribute("data-target-type");
+    const targetID = reportButton.getAttribute("data-target-id");
+    if (!targetType || !targetID) return;
+    submitReportFlow(targetType, targetID)
+      .then((submitted) => {
+        if (submitted) alert("Report submitted.");
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to submit report.");
+      });
+    return;
+  }
+
+  const appealButton = e.target.closest("[data-action='open-appeal-modal']");
+  if (appealButton) {
+    e.preventDefault();
+    if (!state.user) {
+      alert("Login to send an appeal.");
+      return;
+    }
+    const targetType = appealButton.getAttribute("data-target-type");
+    const targetID = appealButton.getAttribute("data-target-id");
+    if (!targetType || !targetID) return;
+    submitAppealFlow(targetType, targetID)
+      .then((submitted) => {
+        if (submitted) {
+          if (location.pathname === "/center") {
+            refreshCenterRouteIfOpen();
+          } else {
+            router();
+          }
+        }
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to submit appeal.");
+      });
+    return;
+  }
+
+  const softDeleteButton = e.target.closest("[data-action='open-soft-delete-modal']");
+  if (softDeleteButton) {
+    e.preventDefault();
+    const targetType = softDeleteButton.getAttribute("data-target-type");
+    const targetID = softDeleteButton.getAttribute("data-target-id");
+    if (!targetType || !targetID) return;
+    softDeleteContentFlow(targetType, targetID)
+      .then((done) => {
+        if (!done) return;
+        if (location.pathname === "/center") {
+          refreshCenterRouteIfOpen();
+        } else {
+          router();
+        }
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to soft delete content.");
+      });
+    return;
+  }
+
+  const restoreButton = e.target.closest("[data-action='restore-content']");
+  if (restoreButton) {
+    e.preventDefault();
+    const targetType = restoreButton.getAttribute("data-target-type");
+    const targetID = restoreButton.getAttribute("data-target-id");
+    if (!targetType || !targetID) return;
+    restoreContentFlow(targetType, targetID)
+      .then((done) => {
+        if (!done) return;
+        if (location.pathname === "/center") {
+          refreshCenterRouteIfOpen();
+        } else {
+          router();
+        }
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to restore content.");
+      });
+    return;
+  }
+
+  const hardDeleteButton = e.target.closest("[data-action='open-hard-delete-modal']");
+  if (hardDeleteButton) {
+    e.preventDefault();
+    const targetType = hardDeleteButton.getAttribute("data-target-type");
+    const targetID = hardDeleteButton.getAttribute("data-target-id");
+    if (!targetType || !targetID) return;
+    hardDeleteContentFlow(targetType, targetID)
+      .then((done) => {
+        if (!done) return;
+        if (location.pathname === "/center") {
+          refreshCenterRouteIfOpen();
+        } else if (targetType === "post" && location.pathname.startsWith("/post/")) {
+          navigate("/");
+        } else {
+          router();
+        }
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to hard delete content.");
+      });
+    return;
+  }
+
+  const protectionButton = e.target.closest("[data-action='toggle-delete-protection']");
+  if (protectionButton) {
+    e.preventDefault();
+    const postID = protectionButton.getAttribute("data-post-id");
+    const nextProtected = protectionButton.getAttribute("data-next-protected") === "1";
+    if (!postID) return;
+    toggleDeleteProtectionFlow(postID, nextProtected)
+      .then((done) => {
+        if (!done) return;
+        router();
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to update delete protection.");
+      });
+    return;
+  }
+
+  const requestRoleButton = e.target.closest("[data-action='request-role']");
+  if (requestRoleButton) {
+    e.preventDefault();
+    const requestedRole = requestRoleButton.getAttribute("data-requested-role");
+    if (!requestedRole) return;
+    requestRoleFlow(requestedRole)
+      .then((done) => {
+        if (done) alert("Role request sent.");
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to send role request.");
+      });
+    return;
+  }
+
+  const directRoleChangeButton = e.target.closest("[data-action='change-user-role']");
+  if (directRoleChangeButton && location.pathname !== "/center") {
+    e.preventDefault();
+    const userID = directRoleChangeButton.getAttribute("data-user-id");
+    const nextRole = directRoleChangeButton.getAttribute("data-next-role");
+    if (!userID || !nextRole) return;
+    changeUserRoleByID(userID, nextRole).catch((err) => {
+      if (err && err.handled) return;
+      alert(err.message || "Failed to change role.");
+    });
+    return;
+  }
+
+  const approvePostButton = e.target.closest("[data-action='queue-approve-post']");
+  if (approvePostButton && location.pathname !== "/center") {
+    e.preventDefault();
+    const postID = approvePostButton.getAttribute("data-post-id");
+    if (!postID) return;
+    approveQueuedPost(postID)
+      .then(() => router())
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to approve post.");
+      });
+    return;
+  }
+
+  const editCategoriesButton = e.target.closest("[data-action='edit-post-categories']");
+  if (editCategoriesButton) {
+    e.preventDefault();
+    const postID = editCategoriesButton.getAttribute("data-post-id");
+    const routePostID = getActivePostIDFromPath();
+    if (!postID || !routePostID || normalizeUserID(postID) !== normalizeUserID(routePostID)) return;
+    apiFetch(`/api/posts/${encodeURIComponent(routePostID)}`)
+      .then((post) => updatePostCategoriesFlow(post))
+      .then((done) => {
+        if (!done) return;
+        router();
+      })
+      .catch((err) => {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to update categories.");
+      });
+    return;
+  }
+
   const notificationsButton = e.target.closest("[data-action='open-notifications']");
   if (notificationsButton) {
     e.preventDefault();
@@ -5087,4 +7108,3 @@ document.addEventListener("focusout", (e) => {
   ensureRealtimeSocket();
   router();
 })();
-

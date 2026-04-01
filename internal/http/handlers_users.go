@@ -10,6 +10,8 @@ type userListItem struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
 	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Badges   []string `json:"badges,omitempty"`
 }
 
 func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +40,8 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 			ID:       strconv.FormatInt(user.ID, 10),
 			Username: user.Username,
 			Name:     name,
+			Role:     string(user.Role),
+			Badges:   user.Badges,
 		})
 	}
 

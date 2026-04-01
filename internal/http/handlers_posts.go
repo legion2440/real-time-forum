@@ -87,6 +87,7 @@ func (h *Handler) handleListPosts(w http.ResponseWriter, r *http.Request) {
 	if userID, ok := userIDFromContext(r.Context()); ok {
 		filter.UserID = &userID
 	}
+	filter.ViewerRole = h.viewerRole(r)
 
 	posts, err := h.posts.ListPosts(r.Context(), filter)
 	if handleServiceError(w, err) {
@@ -217,7 +218,7 @@ func (h *Handler) handleCreateComment(w http.ResponseWriter, r *http.Request, po
 }
 
 func (h *Handler) handleGetPost(w http.ResponseWriter, r *http.Request, postID int64) {
-	post, err := h.posts.GetPost(r.Context(), postID)
+	post, err := h.posts.GetPost(r.Context(), postID, h.viewerRole(r))
 	if handleServiceError(w, err) {
 		return
 	}
