@@ -15,7 +15,10 @@ import (
 type moderationFixture struct {
 	auth       *AuthService
 	posts      *PostService
+	center     *CenterService
 	moderation *ModerationService
+	centerRepo *sqlite.CenterRepo
+	modRepo    *sqlite.ModerationRepo
 	users      *sqlite.UserRepo
 	categories *sqlite.CategoryRepo
 	comments   *sqlite.CommentRepo
@@ -51,7 +54,10 @@ func newModerationFixture(t *testing.T, now time.Time) (*moderationFixture, func
 	return &moderationFixture{
 		auth:       authService,
 		posts:      postService,
+		center:     centerService,
 		moderation: moderationService,
+		centerRepo: centerRepo,
+		modRepo:    moderationRepo,
 		users:      userRepo,
 		categories: categoryRepo,
 		comments:   commentRepo,
@@ -365,6 +371,345 @@ func TestModerationService_ReportRoutingAndAppeals(t *testing.T) {
 	}
 	if _, err := fixture.moderation.CreateAppeal(ctx, authorID, domain.ModerationTargetPost, appealPost.ID, "third appeal"); !errors.Is(err, ErrNoFurtherAppeal) {
 		t.Fatalf("expected no further appeal, got %v", err)
+	}
+}
+
+func TestModerationService_CreateAppealRequiresContentAuthor(t *testing.T) {
+	now := time.Unix(1700010350, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	adminID := registerTestUser(t, fixture.auth, "admin-appeal@example.com", "admin_appeal")
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-appeal@example.com", "moderator_appeal")
+	postAuthorID := registerTestUser(t, fixture.auth, "post-author@example.com", "post_author")
+	commentAuthorID := registerTestUser(t, fixture.auth, "comment-author@example.com", "comment_author")
+	otherUserID := registerTestUser(t, fixture.auth, "other-appeal@example.com", "other_appeal")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, adminID, domain.RoleAdmin, "admin"); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	foreignPost, err := fixture.posts.CreatePost(ctx, postAuthorID, "Foreign post", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create foreign post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, foreignPost.ID, domain.ModerationReasonObscene, "moderator delete"); err != nil {
+		t.Fatalf("soft delete foreign post: %v", err)
+	}
+	if _, err := fixture.moderation.CreateAppeal(ctx, otherUserID, domain.ModerationTargetPost, foreignPost.ID, "foreign appeal"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden on foreign post appeal, got %v", err)
+	}
+
+	ownPost, err := fixture.posts.CreatePost(ctx, postAuthorID, "Own post", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create own post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, ownPost.ID, domain.ModerationReasonObscene, "moderator delete own post"); err != nil {
+		t.Fatalf("soft delete own post: %v", err)
+	}
+	postAppeal, err := fixture.moderation.CreateAppeal(ctx, postAuthorID, domain.ModerationTargetPost, ownPost.ID, "own post appeal")
+	if err != nil {
+		t.Fatalf("expected own post appeal to succeed: %v", err)
+	}
+	if postAppeal.TargetRole != domain.RoleAdmin {
+		t.Fatalf("expected post appeal to route to admin, got %s", postAppeal.TargetRole)
+	}
+
+	commentPost, err := fixture.posts.CreatePost(ctx, postAuthorID, "Comment post", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create comment post: %v", err)
+	}
+	foreignComment, err := fixture.posts.CreateComment(ctx, commentAuthorID, commentPost.ID, "foreign comment", nil)
+	if err != nil {
+		t.Fatalf("create foreign comment: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetComment, foreignComment.ID, domain.ModerationReasonObscene, "delete foreign comment"); err != nil {
+		t.Fatalf("soft delete foreign comment: %v", err)
+	}
+	if _, err := fixture.moderation.CreateAppeal(ctx, otherUserID, domain.ModerationTargetComment, foreignComment.ID, "foreign comment appeal"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected forbidden on foreign comment appeal, got %v", err)
+	}
+
+	ownComment, err := fixture.posts.CreateComment(ctx, commentAuthorID, commentPost.ID, "own comment", nil)
+	if err != nil {
+		t.Fatalf("create own comment: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetComment, ownComment.ID, domain.ModerationReasonObscene, "delete own comment"); err != nil {
+		t.Fatalf("soft delete own comment: %v", err)
+	}
+	commentAppeal, err := fixture.moderation.CreateAppeal(ctx, commentAuthorID, domain.ModerationTargetComment, ownComment.ID, "own comment appeal")
+	if err != nil {
+		t.Fatalf("expected own comment appeal to succeed: %v", err)
+	}
+	if commentAppeal.TargetRole != domain.RoleAdmin {
+		t.Fatalf("expected comment appeal to route to admin, got %s", commentAppeal.TargetRole)
+	}
+}
+
+func TestModerationService_CloseAppealReverseFailureLeavesAppealPending(t *testing.T) {
+	now := time.Unix(1700010375, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	adminID := registerTestUser(t, fixture.auth, "admin-reverse-fail@example.com", "admin_reverse_fail")
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-reverse-fail@example.com", "moderator_reverse_fail")
+	authorID := registerTestUser(t, fixture.auth, "author-reverse-fail@example.com", "author_reverse_fail")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, adminID, domain.RoleAdmin, "admin"); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	post, err := fixture.posts.CreatePost(ctx, authorID, "Reverse fail", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonObscene, "soft delete"); err != nil {
+		t.Fatalf("soft delete post: %v", err)
+	}
+	appeal, err := fixture.moderation.CreateAppeal(ctx, authorID, domain.ModerationTargetPost, post.ID, "please restore")
+	if err != nil {
+		t.Fatalf("create appeal: %v", err)
+	}
+	if err := fixture.moderation.HardDeleteContent(ctx, owner.ID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonIllegal, "final removal"); err != nil {
+		t.Fatalf("hard delete post: %v", err)
+	}
+
+	if _, err := fixture.moderation.CloseAppeal(ctx, adminID, appeal.ID, true, "reverse"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected restore failure to surface as not found, got %v", err)
+	}
+
+	reloadedAppeal, err := fixture.modRepo.GetAppealByID(ctx, appeal.ID)
+	if err != nil {
+		t.Fatalf("reload appeal: %v", err)
+	}
+	if reloadedAppeal.Status != domain.AppealStatusPending {
+		t.Fatalf("expected appeal to remain pending, got %s", reloadedAppeal.Status)
+	}
+
+	history, err := fixture.modRepo.ListHistory(ctx, domain.ModerationHistoryFilter{TargetType: domain.ModerationTargetAppeal, Limit: 20})
+	if err != nil {
+		t.Fatalf("list history: %v", err)
+	}
+	for _, item := range history {
+		if item.TargetID == appeal.ID && item.ActionType == domain.ActionAppealClosed {
+			t.Fatalf("unexpected appeal_closed history after failed reverse: %+v", item)
+		}
+	}
+
+	notifications, err := fixture.centerRepo.ListNotifications(ctx, authorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketAppeals,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list appeal notifications: %v", err)
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("expected no appeal_closed notification after failed reverse, got %+v", notifications)
+	}
+}
+
+func TestModerationService_CloseAppealReverseSuccessRestoresContent(t *testing.T) {
+	now := time.Unix(1700010380, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	adminID := registerTestUser(t, fixture.auth, "admin-reverse-ok@example.com", "admin_reverse_ok")
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-reverse-ok@example.com", "moderator_reverse_ok")
+	authorID := registerTestUser(t, fixture.auth, "author-reverse-ok@example.com", "author_reverse_ok")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, adminID, domain.RoleAdmin, "admin"); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	post, err := fixture.posts.CreatePost(ctx, authorID, "Reverse ok", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonObscene, "soft delete"); err != nil {
+		t.Fatalf("soft delete post: %v", err)
+	}
+	appeal, err := fixture.moderation.CreateAppeal(ctx, authorID, domain.ModerationTargetPost, post.ID, "restore me")
+	if err != nil {
+		t.Fatalf("create appeal: %v", err)
+	}
+
+	updated, err := fixture.moderation.CloseAppeal(ctx, adminID, appeal.ID, true, "reversed")
+	if err != nil {
+		t.Fatalf("close appeal reverse: %v", err)
+	}
+	if updated.Status != domain.AppealStatusReversed {
+		t.Fatalf("expected reversed appeal, got %s", updated.Status)
+	}
+
+	reloadedPost, err := fixture.posts.GetPost(ctx, post.ID, domain.RoleUser)
+	if err != nil {
+		t.Fatalf("reload post: %v", err)
+	}
+	if reloadedPost.DeletedAt != nil {
+		t.Fatalf("expected post to be restored, got deleted_at=%v", reloadedPost.DeletedAt)
+	}
+}
+
+func TestModerationService_DeleteNotificationsContainSnapshots(t *testing.T) {
+	now := time.Unix(1700010390, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-notify@example.com", "moderator_notify")
+	postAuthorID := registerTestUser(t, fixture.auth, "post-notify@example.com", "post_notify")
+	commentAuthorID := registerTestUser(t, fixture.auth, "comment-notify@example.com", "comment_notify")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	post, err := fixture.posts.CreatePost(ctx, postAuthorID, "Deleted title", "Deleted body content", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonObscene, "delete post"); err != nil {
+		t.Fatalf("soft delete post: %v", err)
+	}
+
+	postNotifications, err := fixture.centerRepo.ListNotifications(ctx, postAuthorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("list post delete notifications: %v", err)
+	}
+	if len(postNotifications) != 1 {
+		t.Fatalf("expected one post delete notification, got %d", len(postNotifications))
+	}
+	postPayload := postNotifications[0].Payload
+	if postPayload.PostTitle != "Deleted title" {
+		t.Fatalf("expected deleted post title in payload, got %+v", postPayload)
+	}
+	if !strings.Contains(postPayload.PostPreview, "Deleted body content") {
+		t.Fatalf("expected deleted post body preview in payload, got %+v", postPayload)
+	}
+	postItems, err := fixture.center.ListNotifications(ctx, postAuthorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("list post delete notification items: %v", err)
+	}
+	if len(postItems.Items) != 1 || !strings.Contains(postItems.Items[0].Context, "Deleted title") || !strings.Contains(postItems.Items[0].Context, "Deleted body content") {
+		t.Fatalf("expected deleted post context to show title and body, got %+v", postItems.Items)
+	}
+
+	commentPost, err := fixture.posts.CreatePost(ctx, postAuthorID, "Comment holder", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create comment holder post: %v", err)
+	}
+	comment, err := fixture.posts.CreateComment(ctx, commentAuthorID, commentPost.ID, "Comment body content", nil)
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetComment, comment.ID, domain.ModerationReasonObscene, "delete comment"); err != nil {
+		t.Fatalf("soft delete comment: %v", err)
+	}
+
+	commentNotifications, err := fixture.centerRepo.ListNotifications(ctx, commentAuthorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("list comment delete notifications: %v", err)
+	}
+	if len(commentNotifications) != 1 {
+		t.Fatalf("expected one comment delete notification, got %d", len(commentNotifications))
+	}
+	commentPayload := commentNotifications[0].Payload
+	if !strings.Contains(commentPayload.CommentPreview, "Comment body content") {
+		t.Fatalf("expected deleted comment body preview in payload, got %+v", commentPayload)
+	}
+	commentItems, err := fixture.center.ListNotifications(ctx, commentAuthorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("list comment delete notification items: %v", err)
+	}
+	if len(commentItems.Items) != 1 || !strings.Contains(commentItems.Items[0].Context, "Comment body content") {
+		t.Fatalf("expected deleted comment context to show body, got %+v", commentItems.Items)
+	}
+}
+
+func TestModerationService_DestructiveActionsRequireNotes(t *testing.T) {
+	now := time.Unix(1700010395, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	adminID := registerTestUser(t, fixture.auth, "admin-note@example.com", "admin_note")
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-note@example.com", "moderator_note")
+	authorID := registerTestUser(t, fixture.auth, "author-note@example.com", "author_note")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, adminID, domain.RoleAdmin, "admin"); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	post, err := fixture.posts.CreatePost(ctx, authorID, "Hard delete target", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonObscene, "soft delete"); err != nil {
+		t.Fatalf("soft delete post: %v", err)
+	}
+	if err := fixture.moderation.HardDeleteContent(ctx, adminID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonIllegal, "   "); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected hard delete without note to fail, got %v", err)
+	}
+	if err := fixture.moderation.HardDeleteContent(ctx, adminID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonIllegal, "valid hard delete note"); err != nil {
+		t.Fatalf("expected hard delete with note to succeed, got %v", err)
+	}
+
+	category, err := fixture.moderation.CreateCategory(ctx, adminID, "Needs Note")
+	if err != nil {
+		t.Fatalf("create category: %v", err)
+	}
+	if _, err := fixture.moderation.DeleteCategory(ctx, adminID, category.ID, "   "); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected delete category without note to fail, got %v", err)
+	}
+	postInCategory, err := fixture.posts.CreatePost(ctx, authorID, "Category move", "body", []int64{category.ID}, nil)
+	if err != nil {
+		t.Fatalf("create category post: %v", err)
+	}
+	moved, err := fixture.moderation.DeleteCategory(ctx, adminID, category.ID, "move with note")
+	if err != nil {
+		t.Fatalf("expected delete category with note to succeed, got %v", err)
+	}
+	if moved != 1 {
+		t.Fatalf("expected one moved post, got %d", moved)
+	}
+	reloadedPost, err := fixture.posts.GetPost(ctx, postInCategory.ID, domain.RoleUser)
+	if err != nil {
+		t.Fatalf("reload moved post: %v", err)
+	}
+	if len(reloadedPost.Categories) != 1 || reloadedPost.Categories[0].Code != "other" {
+		t.Fatalf("expected moved post to land in other, got %+v", reloadedPost.Categories)
 	}
 }
 

@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS users (
   profile_initialized INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_owner
+ON users(role)
+WHERE role = 'owner';
+
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,

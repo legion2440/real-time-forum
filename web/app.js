@@ -5035,7 +5035,7 @@ async function deleteCategoryFlow(categoryID, categoryName) {
     description: "Leave an audit note for this bulk move.",
     submitLabel: "Delete category",
     noteLabel: "Note",
-    required: false,
+    required: true,
   });
   if (values == null) return;
   await apiFetch(`/api/moderation/categories/${encodeURIComponent(categoryID)}/delete`, {

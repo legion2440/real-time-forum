@@ -718,7 +718,18 @@ func buildNotificationContext(notification domain.Notification) string {
 			return notification.Payload.PostTitle
 		}
 		return notification.Payload.PostPreview
-	case "role_request_created", "role_request_reviewed", "role_changed", "content_deleted", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
+	case "content_deleted":
+		if title := strings.TrimSpace(notification.Payload.PostTitle); title != "" {
+			if preview := strings.TrimSpace(notification.Payload.PostPreview); preview != "" {
+				return title + " | " + preview
+			}
+			return title
+		}
+		if preview := strings.TrimSpace(notification.Payload.CommentPreview); preview != "" {
+			return preview
+		}
+		return strings.TrimSpace(notification.Payload.Reason)
+	case "role_request_created", "role_request_reviewed", "role_changed", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
 		return strings.TrimSpace(notification.Payload.Reason)
 	case "post_approved":
 		if strings.TrimSpace(notification.Payload.PostTitle) != "" {

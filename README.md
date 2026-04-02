@@ -219,78 +219,78 @@ mkcert -cert-file certs/dev-cert.pem -key-file certs/dev-key.pem 127.0.0.1 local
 cp .env.example .env
 ```
 
-## Moderation and Roles
+## Модерация и роли
 
-The forum now supports five roles:
+Теперь форум поддерживает пять ролей:
 
-- `guest`: read-only
-- `user`: posts, comments, reactions, reports
-- `moderator`: moderation queue, soft delete, escalation reports
-- `admin`: moderator approvals, direct moderator role actions, categories, hard delete
-- `owner`: single top-level staff account, admin approvals, delete protection, history purge
+- `guest`: только просмотр
+- `user`: посты, комментарии, реакции, репорты
+- `moderator`: очередь модерации, soft delete, эскалационные репорты
+- `admin`: одобрение модераторов, прямое управление ролью moderator, категории, hard delete
+- `owner`: единственная верхнеуровневая staff-роль, одобрение админов, delete protection, purge истории
 
-Staff badges currently shown in profile, posts and comments:
+Сейчас staff-badge'и отображаются в профиле, постах и комментариях:
 
 - `owner`
 - `admin`
 - `moder`
 
-### First owner bootstrap
+### Bootstrap первого owner
 
-Owner is never auto-created during normal server startup.
+Owner никогда не создаётся автоматически при обычном запуске сервера.
 
-Create the first owner explicitly:
+Создать первого owner нужно явно:
 
 ```bash
 go run ./cmd/server bootstrap-owner --email owner@example.com --username owner --password secret
 ```
 
-Optional custom DB path:
+Опционально можно указать свой путь к БД:
 
 ```bash
 go run ./cmd/server bootstrap-owner --db ./forum.db --email owner@example.com --username owner --password secret
 ```
 
-Rules:
+Правила:
 
-- bootstrap works only while there is no existing `admin` or `owner`
-- bootstrap creates exactly one `owner`
-- UI does not transfer ownership and does not demote owner
+- bootstrap работает только пока в системе нет существующего `admin` или `owner`
+- bootstrap создаёт ровно одного `owner`
+- передача owner через UI не поддерживается, понизить owner тоже нельзя
 
-### Moderation flow
+### Поток модерации
 
-- New posts are public immediately, but marked `visible + under_review`
-- `under_review` is visible to everyone on the post UI
-- approving a post removes it from the moderation queue and stores `approved_by` / `approved_at`
-- editing an already approved post does not re-queue it automatically
-- comments skip the under-review queue and are moderated through reports
+- новые посты сразу публичны, но помечаются как `visible + under_review`
+- `under_review` виден всем в UI поста
+- при approve пост исчезает из очереди модерации, а также сохраняются `approved_by` / `approved_at`
+- редактирование уже одобренного поста не отправляет его обратно в очередь автоматически
+- комментарии не проходят очередь `under_review` и модерируются через репорты
 
-Delete / restore / appeal semantics:
+Семантика delete / restore / appeal:
 
-- moderator/admin/owner can soft delete posts and comments
-- admin/owner can hard delete
-- owner can toggle post delete protection
-- protected posts cannot be soft-deleted or hard-deleted until protection is removed
-- users see soft-deleted posts/comments as `[deleted]`
-- moderators can restore only content they soft-deleted themselves
-- admin/owner can restore any saved soft-deleted content
-- content authors can submit appeals on moderation decisions; moderator decisions route to admin, admin decisions route to owner
+- `moderator` / `admin` / `owner` могут делать soft delete постов и комментариев
+- `admin` / `owner` могут делать hard delete
+- `owner` может включать и отключать delete protection для поста
+- защищённые посты нельзя удалить ни через soft delete, ни через hard delete, пока защита не снята
+- пользователи видят soft-deleted посты и комментарии как `[deleted]`
+- `moderator` может восстанавливать только тот контент, который сам отправил в soft delete
+- `admin` / `owner` могут восстанавливать любой сохранённый soft-deleted контент
+- авторы контента могут подавать appeal на moderation decisions; решения `moderator` идут на `admin`, решения `admin` идут на `owner`
 
-Reports:
+Репорты:
 
-- users report to moderator + admin + owner
-- moderators report upward to admin + owner
-- closing a report removes it from the active queue for the remaining recipients
+- репорты от `user` попадают `moderator` + `admin` + `owner`
+- репорты от `moderator` эскалируются только `admin` + `owner`
+- при закрытии репорта он исчезает из активной очереди у остальных получателей
 
-Categories:
+Категории:
 
-- system category `other` always exists
-- `other` is stable in DB and cannot be deleted
-- deleting any other category moves its posts into `other`
+- системная категория `other` существует всегда
+- `other` стабильно хранится в БД и не может быть удалена
+- при удалении любой другой категории все её посты переносятся в `other`
 
-### Unified center
+### Единый центр
 
-Moderation/admin UI stays inside the existing `/center` SPA:
+UI модерации и администрирования остаётся внутри существующего SPA-маршрута `/center`:
 
 - `Notifications`: All, Deleted, My reports, Appeals
 - `Moderation`: Under review, Reports, History

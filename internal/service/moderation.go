@@ -408,7 +408,7 @@ func (s *ModerationService) HardDeleteContent(ctx context.Context, actorID int64
 	if actor.Role != domain.RoleAdmin && actor.Role != domain.RoleOwner {
 		return ErrForbidden
 	}
-	note, err = normalizeModerationNote(note, false)
+	note, err = normalizeModerationNote(note, true)
 	if err != nil {
 		return err
 	}
@@ -598,6 +598,13 @@ func (s *ModerationService) CreateAppeal(ctx context.Context, actorID int64, tar
 	if err != nil {
 		return nil, err
 	}
+	ownerID, err := s.appealTargetOwnerID(ctx, targetType, targetID)
+	if err != nil {
+		return nil, err
+	}
+	if ownerID != actor.ID {
+		return nil, ErrForbidden
+	}
 	pendingAppeals, err := s.moderation.ListAppeals(ctx, repo.AppealFilter{
 		RequesterUserID: actor.ID,
 		Status:          domain.AppealStatusPending,
@@ -667,7 +674,9 @@ func (s *ModerationService) CloseAppeal(ctx context.Context, actorID, appealID i
 		return nil, err
 	}
 	if reverse {
-		_ = s.RestoreContent(ctx, actorID, appeal.Target.TargetType, appeal.Target.TargetID, note)
+		if err := s.RestoreContent(ctx, actorID, appeal.Target.TargetType, appeal.Target.TargetID, note); err != nil {
+			return nil, err
+		}
 	}
 	status := domain.AppealStatusDismissed
 	if reverse {
@@ -727,11 +736,15 @@ func (s *ModerationService) DeleteCategory(ctx context.Context, actorID, categor
 	if category.Code == "other" || category.IsSystem {
 		return 0, ErrForbidden
 	}
+	note, err = normalizeModerationNote(note, true)
+	if err != nil {
+		return 0, err
+	}
 	return s.moderation.DeleteCategory(ctx, repo.CategoryDeleteInput{
 		CategoryID: categoryID,
 		Actor:      *actor,
 		DeletedAt:  s.clock.Now(),
-		Note:       strings.TrimSpace(note),
+		Note:       note,
 	})
 }
 
@@ -789,6 +802,31 @@ func normalizeModerationNote(note string, required bool) (string, error) {
 		return "", ErrInvalidInput
 	}
 	return note, nil
+}
+
+func (s *ModerationService) appealTargetOwnerID(ctx context.Context, targetType string, targetID int64) (int64, error) {
+	switch targetType {
+	case domain.ModerationTargetPost:
+		post, err := s.posts.GetByID(ctx, targetID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return 0, ErrNotFound
+			}
+			return 0, err
+		}
+		return post.UserID, nil
+	case domain.ModerationTargetComment:
+		comment, err := s.comments.GetByID(ctx, targetID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return 0, ErrNotFound
+			}
+			return 0, err
+		}
+		return comment.UserID, nil
+	default:
+		return 0, ErrInvalidInput
+	}
 }
 
 func isValidModerationReason(reason domain.ModerationReason) bool {
@@ -960,6 +998,10 @@ func (s *ModerationService) notifyContentDeleted(ctx context.Context, targetType
 		return
 	}
 	if userID := s.contentOwnerID(ctx, targetType, targetID); userID > 0 && userID != actor.ID {
+		payload := s.deletedContentNotificationPayload(ctx, targetType, targetID)
+		payload.ActorName = displayNameOrUsername(&actor)
+		payload.ActorUsername = actor.Username
+		payload.Reason = note
 		_ = s.center.createAndPublishNotification(ctx, domain.Notification{
 			UserID:      userID,
 			ActorUserID: int64Ptr(actor.ID),
@@ -967,12 +1009,8 @@ func (s *ModerationService) notifyContentDeleted(ctx context.Context, targetType
 			Type:        "content_deleted",
 			EntityType:  targetType,
 			EntityID:    targetID,
-			Payload: domain.NotificationPayload{
-				ActorName:     displayNameOrUsername(&actor),
-				ActorUsername: actor.Username,
-				Reason:        note,
-			},
-			CreatedAt: s.clock.Now(),
+			Payload:     payload,
+			CreatedAt:   s.clock.Now(),
 		})
 	}
 }
@@ -1133,4 +1171,32 @@ func (s *ModerationService) contentOwnerID(ctx context.Context, targetType strin
 		}
 	}
 	return 0
+}
+
+func (s *ModerationService) deletedContentNotificationPayload(ctx context.Context, targetType string, targetID int64) domain.NotificationPayload {
+	switch targetType {
+	case domain.ModerationTargetPost:
+		post, err := s.posts.GetByID(ctx, targetID)
+		if err == nil {
+			return domain.NotificationPayload{
+				PostID:      post.ID,
+				PostTitle:   strings.TrimSpace(post.Title),
+				PostPreview: previewText(post.Body, 160),
+			}
+		}
+	case domain.ModerationTargetComment:
+		comment, err := s.comments.GetByID(ctx, targetID)
+		if err == nil {
+			body := strings.TrimSpace(comment.Body)
+			if comment.DeletedAt != nil && strings.TrimSpace(comment.DeletedBody) != "" {
+				body = strings.TrimSpace(comment.DeletedBody)
+			}
+			return domain.NotificationPayload{
+				PostID:         comment.PostID,
+				CommentID:      comment.ID,
+				CommentPreview: previewText(body, 160),
+			}
+		}
+	}
+	return domain.NotificationPayload{}
 }
