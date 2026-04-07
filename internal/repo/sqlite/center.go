@@ -155,6 +155,24 @@ func (r *CenterRepo) MarkNotificationRead(ctx context.Context, userID, notificat
 	return nil
 }
 
+func (r *CenterRepo) DeleteNotification(ctx context.Context, userID, notificationID int64) error {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM notifications
+		WHERE id = ? AND user_id = ?
+	`, notificationID, userID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return repo.ErrNotFound
+	}
+	return nil
+}
+
 func (r *CenterRepo) MarkAllNotificationsRead(ctx context.Context, userID int64, bucket string, readAt time.Time) error {
 	if strings.TrimSpace(bucket) == "" {
 		_, err := r.db.ExecContext(ctx, `

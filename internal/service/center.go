@@ -19,13 +19,18 @@ type NotificationRealtime interface {
 	PublishNotificationSummary(userID int64, summary domain.NotificationUnreadSummary)
 }
 
+type NotificationAppealChecker interface {
+	CanCreateAppeal(ctx context.Context, actorID int64, targetType string, targetID int64) (bool, error)
+}
+
 type CenterService struct {
-	center   repo.CenterRepo
-	users    repo.UserRepo
-	posts    repo.PostRepo
-	comments repo.CommentRepo
-	clock    clock.Clock
-	realtime NotificationRealtime
+	center        repo.CenterRepo
+	users         repo.UserRepo
+	posts         repo.PostRepo
+	comments      repo.CommentRepo
+	clock         clock.Clock
+	realtime      NotificationRealtime
+	appealChecker NotificationAppealChecker
 }
 
 func NewCenterService(center repo.CenterRepo, users repo.UserRepo, posts repo.PostRepo, comments repo.CommentRepo, clock clock.Clock, deps ...any) *CenterService {
@@ -40,8 +45,15 @@ func NewCenterService(center repo.CenterRepo, users repo.UserRepo, posts repo.Po
 		if realtime, ok := dependency.(NotificationRealtime); ok && realtime != nil {
 			service.realtime = realtime
 		}
+		if checker, ok := dependency.(NotificationAppealChecker); ok && checker != nil {
+			service.appealChecker = checker
+		}
 	}
 	return service
+}
+
+func (s *CenterService) SetAppealChecker(checker NotificationAppealChecker) {
+	s.appealChecker = checker
 }
 
 func (s *CenterService) GetUnreadSummary(ctx context.Context, userID int64) (domain.NotificationUnreadSummary, error) {
@@ -130,6 +142,28 @@ func (s *CenterService) MarkNotificationRead(ctx context.Context, userID, notifi
 		s.realtime.PublishNotificationUpdate(userID, item, summary)
 	}
 	return &item, summary, nil
+}
+
+func (s *CenterService) DeleteNotification(ctx context.Context, userID, notificationID int64) (domain.NotificationUnreadSummary, error) {
+	if userID <= 0 || notificationID <= 0 {
+		return domain.NotificationUnreadSummary{}, ErrInvalidInput
+	}
+
+	if err := s.center.DeleteNotification(ctx, userID, notificationID); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return domain.NotificationUnreadSummary{}, ErrNotFound
+		}
+		return domain.NotificationUnreadSummary{}, err
+	}
+
+	summary, err := s.center.CountUnreadNotifications(ctx, userID)
+	if err != nil {
+		return domain.NotificationUnreadSummary{}, err
+	}
+	if s.realtime != nil {
+		s.realtime.PublishNotificationSummary(userID, summary)
+	}
+	return summary, nil
 }
 
 func (s *CenterService) MarkAllNotificationsRead(ctx context.Context, userID int64, bucket string) (domain.NotificationUnreadSummary, error) {
@@ -557,9 +591,24 @@ func (s *CenterService) buildNotificationItem(ctx context.Context, notification 
 		Text:            buildNotificationText(notification),
 		Context:         buildNotificationContext(notification),
 		LinkPath:        buildNotificationLinkPath(notification),
+		EntityType:      notification.EntityType,
+		EntityID:        notification.EntityID,
+		PostTitle:       strings.TrimSpace(notification.Payload.PostTitle),
+		PostPreview:     strings.TrimSpace(notification.Payload.PostPreview),
+		CommentPreview:  strings.TrimSpace(notification.Payload.CommentPreview),
 		EntityAvailable: true,
 		IsRead:          notification.IsRead,
 		CreatedAt:       notification.CreatedAt,
+	}
+
+	if notification.Type == "content_deleted" && s.appealChecker != nil &&
+		(notification.EntityType == domain.NotificationEntityTypePost || notification.EntityType == domain.NotificationEntityTypeComment) &&
+		notification.EntityID > 0 {
+		canAppeal, err := s.appealChecker.CanCreateAppeal(ctx, notification.UserID, notification.EntityType, notification.EntityID)
+		if err != nil {
+			return domain.NotificationItem{}, err
+		}
+		item.CanAppeal = canAppeal
 	}
 
 	available, err := s.isNotificationEntityAvailable(ctx, notification)

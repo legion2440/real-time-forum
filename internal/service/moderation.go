@@ -637,6 +637,46 @@ func (s *ModerationService) CreateAppeal(ctx context.Context, actorID int64, tar
 	return appeal, nil
 }
 
+func (s *ModerationService) CanCreateAppeal(ctx context.Context, actorID int64, targetType string, targetID int64) (bool, error) {
+	actor, err := s.loadUser(ctx, actorID)
+	if err != nil {
+		return false, err
+	}
+	ownerID, err := s.appealTargetOwnerID(ctx, targetType, targetID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalidInput):
+			return false, nil
+		default:
+			return false, err
+		}
+	}
+	if ownerID != actor.ID {
+		return false, nil
+	}
+	pendingAppeals, err := s.moderation.ListAppeals(ctx, repo.AppealFilter{
+		RequesterUserID: actor.ID,
+		Status:          domain.AppealStatusPending,
+	})
+	if err != nil {
+		return false, err
+	}
+	for _, appeal := range pendingAppeals {
+		if appeal.Target.TargetType == targetType && appeal.Target.TargetID == targetID {
+			return false, nil
+		}
+	}
+	if _, _, err := s.nextAppealStage(ctx, actor.ID, targetType, targetID); err != nil {
+		switch {
+		case errors.Is(err, ErrNoFurtherAppeal), errors.Is(err, ErrNotFound), errors.Is(err, ErrInvalidInput):
+			return false, nil
+		default:
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func (s *ModerationService) ListAppeals(ctx context.Context, actorID int64, mine bool, status domain.AppealStatus) ([]domain.ModerationAppeal, error) {
 	actor, err := s.loadUser(ctx, actorID)
 	if err != nil {

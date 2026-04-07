@@ -150,6 +150,15 @@ func (h *Handler) handleCenterNotificationSubroutes(w http.ResponseWriter, r *ht
 	}
 
 	parts := strings.Split(rest, "/")
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		notificationID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || notificationID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid input")
+			return
+		}
+		h.handleCenterNotificationDelete(w, r, notificationID)
+		return
+	}
 	if len(parts) != 2 || parts[1] != "read" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -181,6 +190,24 @@ func (h *Handler) handleCenterNotificationRead(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{
 		"notification": item,
 		"summary":      summary,
+	})
+}
+
+func (h *Handler) handleCenterNotificationDelete(w http.ResponseWriter, r *http.Request, notificationID int64) {
+	userID, ok := userIDFromContext(r.Context())
+	if !ok {
+		writeAuthUnauthorized(w, r)
+		return
+	}
+
+	summary, err := h.center.DeleteNotification(r.Context(), userID, notificationID)
+	if handleServiceError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted":        true,
+		"notificationId": notificationID,
+		"summary":        summary,
 	})
 }
 

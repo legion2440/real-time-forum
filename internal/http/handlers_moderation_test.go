@@ -59,6 +59,7 @@ func newModerationHandler(t *testing.T) (*moderationHandlerFixture, func()) {
 	centerService := service.NewCenterService(centerRepo, userRepo, postRepo, commentRepo, testClock)
 	postService := service.NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, nil, testClock, centerService)
 	moderationService := service.NewModerationService(userRepo, postRepo, commentRepo, categoryRepo, moderationRepo, testClock, centerService)
+	centerService.SetAppealChecker(moderationService)
 
 	return &moderationHandlerFixture{
 		handler:    NewHandler(authService, postService, centerService, moderationService),
@@ -279,5 +280,130 @@ func TestModerationHTTP_RoleFlowReportsAndDeletedPlaceholders(t *testing.T) {
 	demotedMeRec := performJSONRequest(t, handler, http.MethodGet, "/api/me", nil, moderatorToken)
 	if demotedMeRec.Code != http.StatusOK || !strings.Contains(demotedMeRec.Body.String(), `"role":"user"`) {
 		t.Fatalf("expected immediate user role after demotion, got status=%d body=%q", demotedMeRec.Code, demotedMeRec.Body.String())
+	}
+}
+
+func TestModerationHTTP_DeletedNotificationAppealActionAndDelete(t *testing.T) {
+	fixture, cleanup := newModerationHandler(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner, err := fixture.moderation.BootstrapOwner(ctx, "owner-center-http@example.com", "owner_center_http", "secret")
+	if err != nil {
+		t.Fatalf("bootstrap owner: %v", err)
+	}
+
+	moderatorID := mustRegisterUser(t, fixture.auth, "moderator-center-http@example.com", "moderator_center_http")
+	mustRegisterUser(t, fixture.auth, "author-center-http@example.com", "author_center_http")
+	mustRegisterUser(t, fixture.auth, "other-center-http@example.com", "other_center_http")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "promote moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	moderatorToken := mustLoginUser(t, fixture.auth, "moderator-center-http@example.com")
+	authorToken := mustLoginUser(t, fixture.auth, "author-center-http@example.com")
+	otherToken := mustLoginUser(t, fixture.auth, "other-center-http@example.com")
+	handler := fixture.handler.Routes(t.TempDir())
+
+	createPostRec := performJSONRequest(t, handler, http.MethodPost, "/api/posts", map[string]any{
+		"title":      "Comment target",
+		"body":       "body",
+		"categories": []int64{1},
+	}, authorToken)
+	if createPostRec.Code != http.StatusCreated {
+		t.Fatalf("create post status=%d body=%q", createPostRec.Code, createPostRec.Body.String())
+	}
+	post := decodeBody[map[string]any](t, createPostRec)
+	postID := int64(post["id"].(float64))
+
+	createCommentRec := performJSONRequest(t, handler, http.MethodPost, "/api/posts/"+strconv.FormatInt(postID, 10)+"/comments", map[string]any{
+		"body": "comment hidden from thread",
+	}, authorToken)
+	if createCommentRec.Code != http.StatusCreated {
+		t.Fatalf("create comment status=%d body=%q", createCommentRec.Code, createCommentRec.Body.String())
+	}
+	comment := decodeBody[map[string]any](t, createCommentRec)
+	commentID := int64(comment["id"].(float64))
+
+	deleteRec := performJSONRequest(t, handler, http.MethodPost, "/api/moderation/comments/"+strconv.FormatInt(commentID, 10)+"/soft-delete", map[string]any{
+		"reason": "obscene",
+		"note":   "delete hidden thread",
+	}, moderatorToken)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("soft delete comment status=%d body=%q", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	authorNotificationsRec := performJSONRequest(t, handler, http.MethodGet, "/api/center/notifications?bucket=deleted", nil, authorToken)
+	if authorNotificationsRec.Code != http.StatusOK {
+		t.Fatalf("author notifications status=%d body=%q", authorNotificationsRec.Code, authorNotificationsRec.Body.String())
+	}
+	notifications := decodeBody[domain.NotificationList](t, authorNotificationsRec)
+	if len(notifications.Items) != 1 {
+		t.Fatalf("expected one deleted notification, got %+v", notifications.Items)
+	}
+	item := notifications.Items[0]
+	if item.Type != "content_deleted" || item.EntityType != domain.NotificationEntityTypeComment || item.EntityID != commentID {
+		t.Fatalf("unexpected deleted notification item: %+v", item)
+	}
+	if !item.CanAppeal {
+		t.Fatalf("expected deleted notification to expose appeal action, got %+v", item)
+	}
+	if !strings.Contains(item.CommentPreview, "comment hidden from thread") {
+		t.Fatalf("expected deleted notification to include comment preview, got %+v", item)
+	}
+
+	otherNotificationsRec := performJSONRequest(t, handler, http.MethodGet, "/api/center/notifications?bucket=deleted", nil, otherToken)
+	if otherNotificationsRec.Code != http.StatusOK {
+		t.Fatalf("other notifications status=%d body=%q", otherNotificationsRec.Code, otherNotificationsRec.Body.String())
+	}
+	otherNotifications := decodeBody[domain.NotificationList](t, otherNotificationsRec)
+	if len(otherNotifications.Items) != 0 {
+		t.Fatalf("expected non-author to have no deleted notification action entrypoint, got %+v", otherNotifications.Items)
+	}
+
+	appealRec := performJSONRequest(t, handler, http.MethodPost, "/api/moderation/appeals", map[string]any{
+		"targetType": item.EntityType,
+		"targetId":   item.EntityID,
+		"note":       "appeal via deleted notification",
+	}, authorToken)
+	if appealRec.Code != http.StatusCreated {
+		t.Fatalf("create appeal status=%d body=%q", appealRec.Code, appealRec.Body.String())
+	}
+
+	updatedNotificationsRec := performJSONRequest(t, handler, http.MethodGet, "/api/center/notifications?bucket=deleted", nil, authorToken)
+	if updatedNotificationsRec.Code != http.StatusOK {
+		t.Fatalf("updated notifications status=%d body=%q", updatedNotificationsRec.Code, updatedNotificationsRec.Body.String())
+	}
+	updatedNotifications := decodeBody[domain.NotificationList](t, updatedNotificationsRec)
+	if len(updatedNotifications.Items) != 1 || updatedNotifications.Items[0].CanAppeal {
+		t.Fatalf("expected appeal action to disappear after pending appeal, got %+v", updatedNotifications.Items)
+	}
+
+	otherDeleteRec := performJSONRequest(t, handler, http.MethodDelete, "/api/center/notifications/"+strconv.FormatInt(item.ID, 10), nil, otherToken)
+	if otherDeleteRec.Code != http.StatusNotFound {
+		t.Fatalf("expected deleting foreign notification to return 404, got status=%d body=%q", otherDeleteRec.Code, otherDeleteRec.Body.String())
+	}
+
+	deleteNotificationRec := performJSONRequest(t, handler, http.MethodDelete, "/api/center/notifications/"+strconv.FormatInt(item.ID, 10), nil, authorToken)
+	if deleteNotificationRec.Code != http.StatusOK {
+		t.Fatalf("delete notification status=%d body=%q", deleteNotificationRec.Code, deleteNotificationRec.Body.String())
+	}
+
+	finalNotificationsRec := performJSONRequest(t, handler, http.MethodGet, "/api/center/notifications?bucket=deleted", nil, authorToken)
+	if finalNotificationsRec.Code != http.StatusOK {
+		t.Fatalf("final notifications status=%d body=%q", finalNotificationsRec.Code, finalNotificationsRec.Body.String())
+	}
+	finalNotifications := decodeBody[domain.NotificationList](t, finalNotificationsRec)
+	if len(finalNotifications.Items) != 0 {
+		t.Fatalf("expected deleted notification to disappear after delete, got %+v", finalNotifications.Items)
+	}
+
+	postRec := performJSONRequest(t, handler, http.MethodGet, "/api/posts/"+strconv.FormatInt(postID, 10), nil, "")
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("post should remain after notification delete, got status=%d body=%q", postRec.Code, postRec.Body.String())
+	}
+	if !strings.Contains(postRec.Body.String(), `"id":"`+strconv.FormatInt(postID, 10)+`"`) {
+		t.Fatalf("expected source content response to remain available, got body=%q", postRec.Body.String())
 	}
 }

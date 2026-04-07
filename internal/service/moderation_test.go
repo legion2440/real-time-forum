@@ -50,6 +50,7 @@ func newModerationFixture(t *testing.T, now time.Time) (*moderationFixture, func
 	centerService := NewCenterService(centerRepo, userRepo, postRepo, commentRepo, testClock)
 	postService := NewPostService(postRepo, commentRepo, categoryRepo, reactionRepo, nil, testClock, centerService)
 	moderationService := NewModerationService(userRepo, postRepo, commentRepo, categoryRepo, moderationRepo, testClock, centerService)
+	centerService.SetAppealChecker(moderationService)
 
 	return &moderationFixture{
 		auth:       authService,
@@ -757,5 +758,202 @@ func TestModerationService_DeleteCategoryMovesPostsToOther(t *testing.T) {
 	}
 	if _, err := fixture.moderation.DeleteCategory(ctx, adminID, other.ID, "should fail"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected deleting other to be forbidden, got %v", err)
+	}
+}
+
+func TestModerationService_DeletedCommentNotificationProvidesAppealEntrypoint(t *testing.T) {
+	now := time.Unix(1700010500, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-comment-entry@example.com", "moderator_comment_entry")
+	authorID := registerTestUser(t, fixture.auth, "author-comment-entry@example.com", "author_comment_entry")
+	otherUserID := registerTestUser(t, fixture.auth, "other-comment-entry@example.com", "other_comment_entry")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "promote moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	post, err := fixture.posts.CreatePost(ctx, authorID, "Hidden thread", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	comment, err := fixture.posts.CreateComment(ctx, authorID, post.ID, "comment hidden from thread", nil)
+	if err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetComment, comment.ID, domain.ModerationReasonObscene, "delete thread root"); err != nil {
+		t.Fatalf("soft delete comment: %v", err)
+	}
+
+	visibleComments, err := fixture.comments.ListByPost(ctx, post.ID, domain.CommentFilter{})
+	if err != nil {
+		t.Fatalf("list comments: %v", err)
+	}
+	if len(visibleComments) != 0 {
+		t.Fatalf("expected fully deleted thread to be hidden, got %+v", visibleComments)
+	}
+
+	authorNotifications, err := fixture.center.ListNotifications(ctx, authorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list author deleted notifications: %v", err)
+	}
+	if len(authorNotifications.Items) != 1 {
+		t.Fatalf("expected one deleted notification, got %+v", authorNotifications.Items)
+	}
+	item := authorNotifications.Items[0]
+	if item.Type != "content_deleted" || item.EntityType != domain.NotificationEntityTypeComment || item.EntityID != comment.ID {
+		t.Fatalf("unexpected deleted notification item: %+v", item)
+	}
+	if !item.CanAppeal {
+		t.Fatalf("expected deleted comment notification to expose appeal action, got %+v", item)
+	}
+	if !strings.Contains(item.CommentPreview, "comment hidden from thread") {
+		t.Fatalf("expected comment preview in notification, got %+v", item)
+	}
+
+	otherNotifications, err := fixture.center.ListNotifications(ctx, otherUserID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list other deleted notifications: %v", err)
+	}
+	if len(otherNotifications.Items) != 0 {
+		t.Fatalf("expected non-author to have no deleted notification entrypoint, got %+v", otherNotifications.Items)
+	}
+
+	if _, err := fixture.moderation.CreateAppeal(ctx, authorID, item.EntityType, item.EntityID, "appeal from deleted notification"); err != nil {
+		t.Fatalf("create appeal from deleted notification: %v", err)
+	}
+
+	updatedNotifications, err := fixture.center.ListNotifications(ctx, authorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list updated deleted notifications: %v", err)
+	}
+	if len(updatedNotifications.Items) != 1 || updatedNotifications.Items[0].CanAppeal {
+		t.Fatalf("expected appeal action to disappear after pending appeal, got %+v", updatedNotifications.Items)
+	}
+
+	ownerDeletedComment, err := fixture.posts.CreateComment(ctx, authorID, post.ID, "owner final decision", nil)
+	if err != nil {
+		t.Fatalf("create owner-deleted comment: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, owner.ID, domain.ModerationTargetComment, ownerDeletedComment.ID, domain.ModerationReasonOther, "owner delete"); err != nil {
+		t.Fatalf("owner soft delete comment: %v", err)
+	}
+
+	finalNotifications, err := fixture.center.ListNotifications(ctx, authorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list final deleted notifications: %v", err)
+	}
+	var ownerItem *domain.NotificationItem
+	for i := range finalNotifications.Items {
+		if finalNotifications.Items[i].EntityType == domain.NotificationEntityTypeComment && finalNotifications.Items[i].EntityID == ownerDeletedComment.ID {
+			ownerItem = &finalNotifications.Items[i]
+			break
+		}
+	}
+	if ownerItem == nil {
+		t.Fatalf("expected owner delete notification, got %+v", finalNotifications.Items)
+	}
+	if ownerItem.CanAppeal {
+		t.Fatalf("expected no appeal action after owner decision, got %+v", ownerItem)
+	}
+}
+
+func TestCenterService_DeleteNotificationOwnOnlyAndKeepsSourceData(t *testing.T) {
+	now := time.Unix(1700010600, 0).UTC()
+	fixture, cleanup := newModerationFixture(t, now)
+	defer cleanup()
+
+	ctx := context.Background()
+	owner := bootstrapOwner(t, fixture)
+	moderatorID := registerTestUser(t, fixture.auth, "moderator-delete-notification@example.com", "moderator_delete_notification")
+	authorID := registerTestUser(t, fixture.auth, "author-delete-notification@example.com", "author_delete_notification")
+	otherUserID := registerTestUser(t, fixture.auth, "other-delete-notification@example.com", "other_delete_notification")
+
+	if _, err := fixture.moderation.ChangeUserRole(ctx, owner.ID, moderatorID, domain.RoleModerator, "promote moderator"); err != nil {
+		t.Fatalf("promote moderator: %v", err)
+	}
+
+	post, err := fixture.posts.CreatePost(ctx, authorID, "Delete notification source", "body", []int64{1}, nil)
+	if err != nil {
+		t.Fatalf("create post: %v", err)
+	}
+	if err := fixture.moderation.SoftDeleteContent(ctx, moderatorID, domain.ModerationTargetPost, post.ID, domain.ModerationReasonObscene, "deleted content notification"); err != nil {
+		t.Fatalf("soft delete post: %v", err)
+	}
+
+	notifications, err := fixture.center.ListNotifications(ctx, authorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list deleted notifications: %v", err)
+	}
+	if len(notifications.Items) != 1 {
+		t.Fatalf("expected one deleted notification, got %+v", notifications.Items)
+	}
+	notificationID := notifications.Items[0].ID
+
+	if _, err := fixture.center.DeleteNotification(ctx, otherUserID, notificationID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected deleting foreign notification to fail with not found, got %v", err)
+	}
+
+	summary, err := fixture.center.DeleteNotification(ctx, authorID, notificationID)
+	if err != nil {
+		t.Fatalf("delete notification: %v", err)
+	}
+	if summary.Total != 0 || summary.Deleted != 0 {
+		t.Fatalf("expected unread summary to be cleared after delete, got %+v", summary)
+	}
+
+	remaining, err := fixture.center.ListNotifications(ctx, authorID, domain.NotificationFilter{
+		Bucket: domain.NotificationBucketDeleted,
+		Limit:  20,
+	})
+	if err != nil {
+		t.Fatalf("list remaining notifications: %v", err)
+	}
+	if len(remaining.Items) != 0 {
+		t.Fatalf("expected notification to disappear from list, got %+v", remaining.Items)
+	}
+
+	storedPost, err := fixture.posts.GetPost(ctx, post.ID, domain.RoleUser)
+	if err != nil {
+		t.Fatalf("get deleted post after notification delete: %v", err)
+	}
+	if storedPost.DeletedAt == nil {
+		t.Fatalf("expected source post to remain deleted after notification delete, got %+v", storedPost)
+	}
+
+	history, err := fixture.moderation.ListHistory(ctx, owner.ID, domain.ModerationHistoryFilter{
+		TargetType: domain.ModerationTargetPost,
+		Limit:      20,
+	})
+	if err != nil {
+		t.Fatalf("list moderation history: %v", err)
+	}
+	foundDeleteRecord := false
+	for _, record := range history {
+		if record.TargetID == post.ID && record.ActionType == domain.ActionPostSoftDeleted {
+			foundDeleteRecord = true
+			break
+		}
+	}
+	if !foundDeleteRecord {
+		t.Fatalf("expected moderation history to remain after notification delete, got %+v", history)
 	}
 }

@@ -91,6 +91,12 @@ type NotificationItem struct {
 	Text            string    `json:"text"`
 	Context         string    `json:"context,omitempty"`
 	LinkPath        string    `json:"linkPath,omitempty"`
+	EntityType      string    `json:"entityType,omitempty"`
+	EntityID        int64     `json:"entityId,omitempty"`
+	PostTitle       string    `json:"postTitle,omitempty"`
+	PostPreview     string    `json:"postPreview,omitempty"`
+	CommentPreview  string    `json:"commentPreview,omitempty"`
+	CanAppeal       bool      `json:"canAppeal,omitempty"`
 	EntityAvailable bool      `json:"entityAvailable"`
 	IsRead          bool      `json:"isRead"`
 	CreatedAt       time.Time `json:"createdAt"`

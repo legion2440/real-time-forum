@@ -3049,6 +3049,12 @@ function normalizeNotificationItem(notification) {
     text,
     context,
     linkPath,
+    entityType: String(notification.entityType || notification.entity_type || "").trim(),
+    entityID: normalizeUserID(notification.entityId || notification.entity_id),
+    postTitle: String(notification.postTitle || notification.post_title || "").trim(),
+    postPreview: String(notification.postPreview || notification.post_preview || "").trim(),
+    commentPreview: String(notification.commentPreview || notification.comment_preview || "").trim(),
+    canAppeal: Boolean(notification.canAppeal ?? notification.can_appeal ?? false),
     entityAvailable: Boolean(notification.entityAvailable ?? notification.entity_available ?? true),
     isRead: Boolean(notification.isRead ?? notification.is_read ?? false),
     createdAt,
@@ -3409,6 +3415,15 @@ function replaceNotificationItem(item) {
   if (allIndex >= 0) {
     allState.items[allIndex] = normalizedItem;
   }
+}
+
+function removeNotificationItem(notificationID) {
+  const id = normalizeUserID(notificationID);
+  if (!id) return;
+  CENTER_NOTIFICATION_BUCKETS.forEach((bucket) => {
+    const bucketState = getNotificationBucketState(bucket);
+    bucketState.items = bucketState.items.filter((item) => normalizeUserID(item && item.id) !== id);
+  });
 }
 
 function isMessageForPeer(message, peerID) {
@@ -3913,12 +3928,13 @@ function renderCenterSubtabs(activeTab, activeSubtab) {
 
 function renderCenterNotificationItem(item) {
   if (!item) return "";
+  const deletedPreviewMarkup = item.type === "content_deleted" ? renderDeletedNotificationPreview(item) : "";
   const meta = item.context || (item.entityAvailable ? "" : "content is no longer available");
-  const metaMarkup = meta
+  const metaMarkup = deletedPreviewMarkup || (meta
     ? item.linkPath && item.entityAvailable
       ? `<a class="center-item-body center-item-context-link" data-link href="${escapeHTML(item.linkPath)}">${escapeHTML(meta)}</a>`
       : `<div class="center-item-body">${escapeHTML(meta)}</div>`
-    : "";
+    : "");
   return `
     <article class="center-item center-notification-item${item.isRead ? " is-read" : " is-unread"}">
       <div class="center-item-main">
@@ -3929,9 +3945,38 @@ function renderCenterNotificationItem(item) {
         ${metaMarkup}
         <div class="center-item-actions">
           ${item.isRead ? `<span class="center-status-label">Seen</span>` : `<button class="btn btn-ghost btn-compact" type="button" data-action="notification-read" data-notification-id="${escapeHTML(item.id)}">Mark as read</button>`}
+          ${item.type === "content_deleted" && item.canAppeal && item.entityType && item.entityID ? `<button class="btn btn-primary btn-compact" type="button" data-action="open-appeal-modal" data-target-type="${escapeHTML(item.entityType)}" data-target-id="${escapeHTML(item.entityID)}">Appeal</button>` : ""}
+          <button class="btn btn-ghost btn-compact" type="button" data-action="notification-delete" data-notification-id="${escapeHTML(item.id)}">Delete notification</button>
         </div>
       </div>
     </article>
+  `;
+}
+
+function renderDeletedNotificationPreview(item) {
+  if (!item || item.type !== "content_deleted") return "";
+  const postTitle = truncateInline(item.postTitle, 80);
+  const postPreview = truncateInline(item.postPreview, 160);
+  const commentPreview = truncateInline(item.commentPreview, 160);
+  const bodyPreview = commentPreview || postPreview;
+  if (!postTitle && !bodyPreview) return "";
+
+  let titleMarkup = "";
+  if (postTitle) {
+    titleMarkup = item.linkPath && item.entityType === "post" && item.entityAvailable
+      ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">${escapeHTML(postTitle)}</a>`
+      : `<strong>${escapeHTML(postTitle)}</strong>`;
+  } else if (item.entityType === "comment") {
+    titleMarkup = "<strong>Comment</strong>";
+  } else {
+    titleMarkup = "<strong>Post</strong>";
+  }
+
+  return `
+    <div class="center-target-preview">
+      ${titleMarkup}
+      ${bodyPreview ? `<div class="center-item-body">${escapeHTML(bodyPreview)}</div>` : ""}
+    </div>
   `;
 }
 
@@ -4654,6 +4699,27 @@ function bindCenterActions() {
       } catch (err) {
         if (err && err.handled) return;
         alert(err.message || "Failed to mark notification as read.");
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-action='notification-delete']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const notificationID = button.getAttribute("data-notification-id");
+      if (!notificationID) return;
+      if (!confirm("Delete this notification?")) return;
+      try {
+        const response = await apiFetch(`/api/center/notifications/${encodeURIComponent(notificationID)}`, {
+          method: "DELETE",
+        });
+        removeNotificationItem(notificationID);
+        if (response && response.summary) {
+          setNotificationSummary(response.summary);
+        }
+        refreshCenterRouteIfOpen();
+      } catch (err) {
+        if (err && err.handled) return;
+        alert(err.message || "Failed to delete notification.");
       }
     });
   });

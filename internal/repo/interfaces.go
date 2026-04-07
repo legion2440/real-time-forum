@@ -127,6 +127,7 @@ type CenterRepo interface {
 	ListNotifications(ctx context.Context, userID int64, filter domain.NotificationFilter) ([]domain.Notification, error)
 	CountUnreadNotifications(ctx context.Context, userID int64) (domain.NotificationUnreadSummary, error)
 	MarkNotificationRead(ctx context.Context, userID, notificationID int64, readAt time.Time) error
+	DeleteNotification(ctx context.Context, userID, notificationID int64) error
 	MarkAllNotificationsRead(ctx context.Context, userID int64, bucket string, readAt time.Time) error
 	MarkDMNotificationsRead(ctx context.Context, userID, peerID, lastReadMessageID int64, readAt time.Time) error
 	CreatePostSubscription(ctx context.Context, userID, postID int64, createdAt time.Time) error
@@ -149,17 +150,17 @@ type RoleRequestFilter struct {
 }
 
 type ReportFilter struct {
-	ViewerUserID  int64
-	ViewerRole    domain.UserRole
-	Status        domain.ModerationStatus
+	ViewerUserID   int64
+	ViewerRole     domain.UserRole
+	Status         domain.ModerationStatus
 	ReporterUserID int64
 }
 
 type AppealFilter struct {
-	ViewerUserID   int64
-	ViewerRole     domain.UserRole
+	ViewerUserID    int64
+	ViewerRole      domain.UserRole
 	RequesterUserID int64
-	Status         domain.AppealStatus
+	Status          domain.AppealStatus
 }
 
 type RoleRequestCreateInput struct {
@@ -170,11 +171,11 @@ type RoleRequestCreateInput struct {
 }
 
 type RoleRequestReviewInput struct {
-	RequestID   int64
-	Actor       domain.User
-	Status      domain.RoleRequestStatus
-	Note        string
-	ReviewedAt  time.Time
+	RequestID  int64
+	Actor      domain.User
+	Status     domain.RoleRequestStatus
+	Note       string
+	ReviewedAt time.Time
 }
 
 type RoleChangeInput struct {
@@ -186,22 +187,22 @@ type RoleChangeInput struct {
 }
 
 type ReportCreateInput struct {
-	TargetType                string
-	TargetID                  int64
-	Reporter                  domain.User
-	Reason                    domain.ModerationReason
-	Note                      string
-	CreatedAt                 time.Time
-	LinkedPreviousDecisionID  *int64
+	TargetType               string
+	TargetID                 int64
+	Reporter                 domain.User
+	Reason                   domain.ModerationReason
+	Note                     string
+	CreatedAt                time.Time
+	LinkedPreviousDecisionID *int64
 }
 
 type ReportCloseInput struct {
-	ReportID      int64
-	Actor         domain.User
-	Status        domain.ModerationStatus
+	ReportID       int64
+	Actor          domain.User
+	Status         domain.ModerationStatus
 	DecisionReason domain.ModerationReason
-	DecisionNote  string
-	ClosedAt      time.Time
+	DecisionNote   string
+	ClosedAt       time.Time
 }
 
 type AppealCreateInput struct {
@@ -216,28 +217,28 @@ type AppealCreateInput struct {
 }
 
 type AppealCloseInput struct {
-	AppealID      int64
-	Actor         domain.User
-	Status        domain.AppealStatus
-	DecisionNote  string
-	ClosedAt      time.Time
+	AppealID     int64
+	Actor        domain.User
+	Status       domain.AppealStatus
+	DecisionNote string
+	ClosedAt     time.Time
 }
 
 type PostApprovalInput struct {
-	PostID            int64
-	Actor             domain.User
-	ApprovedAt        time.Time
-	CategoryIDs       []int64
-	UpdateCategories  bool
-	Note              string
+	PostID           int64
+	Actor            domain.User
+	ApprovedAt       time.Time
+	CategoryIDs      []int64
+	UpdateCategories bool
+	Note             string
 }
 
 type PostCategoryUpdateInput struct {
-	PostID       int64
-	Actor        domain.User
-	CategoryIDs  []int64
-	UpdatedAt    time.Time
-	Note         string
+	PostID      int64
+	Actor       domain.User
+	CategoryIDs []int64
+	UpdatedAt   time.Time
+	Note        string
 }
 
 type ContentModerationInput struct {
@@ -250,10 +251,10 @@ type ContentModerationInput struct {
 }
 
 type CategoryCreateInput struct {
-	Category domain.Category
-	Actor    domain.User
+	Category  domain.Category
+	Actor     domain.User
 	CreatedAt time.Time
-	Note     string
+	Note      string
 }
 
 type CategoryDeleteInput struct {
@@ -264,10 +265,10 @@ type CategoryDeleteInput struct {
 }
 
 type HistoryPurgeInput struct {
-	Actor   domain.User
-	Filter  domain.ModerationHistoryFilter
+	Actor    domain.User
+	Filter   domain.ModerationHistoryFilter
 	PurgedAt time.Time
-	Note    string
+	Note     string
 }
 
 type ModerationRepo interface {
