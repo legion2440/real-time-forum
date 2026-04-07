@@ -3963,13 +3963,17 @@ function renderDeletedNotificationPreview(item) {
 
   let titleMarkup = "";
   if (postTitle) {
-    titleMarkup = item.linkPath && item.entityType === "post" && item.entityAvailable
+    titleMarkup = item.linkPath && item.entityAvailable
       ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">${escapeHTML(postTitle)}</a>`
       : `<strong>${escapeHTML(postTitle)}</strong>`;
   } else if (item.entityType === "comment") {
-    titleMarkup = "<strong>Comment</strong>";
+    titleMarkup = item.linkPath && item.entityAvailable
+      ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">Comment</a>`
+      : "<strong>Comment</strong>";
   } else {
-    titleMarkup = "<strong>Post</strong>";
+    titleMarkup = item.linkPath && item.entityAvailable
+      ? `<a class="center-item-link" data-link href="${escapeHTML(item.linkPath)}">Post</a>`
+      : "<strong>Post</strong>";
   }
 
   return `

@@ -842,7 +842,18 @@ func buildNotificationLinkPath(notification domain.Notification) string {
 			commentID = notification.EntityID
 		}
 		return buildPostCommentPath(postID, commentID)
-	case "post_approved", "content_deleted", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
+	case "content_deleted":
+		if notification.EntityType == domain.NotificationEntityTypeComment {
+			return buildPostCommentPath(notificationPostID(notification), notificationCommentID(notification))
+		}
+		if notification.EntityType == domain.NotificationEntityTypePost {
+			postID := notificationPostID(notification)
+			if postID <= 0 {
+				postID = notification.EntityID
+			}
+			return buildPostPath(postID)
+		}
+	case "post_approved", "content_restored", "report_created", "report_closed", "appeal_created", "appeal_closed":
 		if notification.EntityType == domain.NotificationEntityTypePost {
 			return buildPostPath(notification.EntityID)
 		}

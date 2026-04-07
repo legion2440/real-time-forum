@@ -443,3 +443,38 @@ func TestCenterService_PostCommentNotificationUsesPostAvailabilityEvenIfCommentS
 		t.Fatalf("expected deleted post label, got %+v", notifications.Items[0])
 	}
 }
+
+func TestBuildNotificationLinkPath_DeletedCommentUsesCommentLinkAndFallsBackToPost(t *testing.T) {
+	commentLink := buildNotificationLinkPath(domain.Notification{
+		Type:       "content_deleted",
+		EntityType: domain.NotificationEntityTypeComment,
+		EntityID:   77,
+		Payload: domain.NotificationPayload{
+			PostID:    42,
+			CommentID: 77,
+		},
+	})
+	if commentLink != "/post/42#comment-77" {
+		t.Fatalf("expected deleted comment deep link, got %q", commentLink)
+	}
+
+	postFallbackLink := buildNotificationLinkPath(domain.Notification{
+		Type:       "content_deleted",
+		EntityType: domain.NotificationEntityTypeComment,
+		Payload: domain.NotificationPayload{
+			PostID: 42,
+		},
+	})
+	if postFallbackLink != "/post/42" {
+		t.Fatalf("expected deleted comment fallback post link, got %q", postFallbackLink)
+	}
+
+	postLink := buildNotificationLinkPath(domain.Notification{
+		Type:       "content_deleted",
+		EntityType: domain.NotificationEntityTypePost,
+		EntityID:   15,
+	})
+	if postLink != "/post/15" {
+		t.Fatalf("expected deleted post link to remain unchanged, got %q", postLink)
+	}
+}

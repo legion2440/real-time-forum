@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -616,6 +617,9 @@ func TestModerationService_DeleteNotificationsContainSnapshots(t *testing.T) {
 	if len(postItems.Items) != 1 || !strings.Contains(postItems.Items[0].Context, "Deleted title") || !strings.Contains(postItems.Items[0].Context, "Deleted body content") {
 		t.Fatalf("expected deleted post context to show title and body, got %+v", postItems.Items)
 	}
+	if postItems.Items[0].LinkPath != "/post/"+strconv.FormatInt(post.ID, 10) {
+		t.Fatalf("expected deleted post link path to stay on post, got %+v", postItems.Items[0])
+	}
 
 	commentPost, err := fixture.posts.CreatePost(ctx, postAuthorID, "Comment holder", "body", []int64{1}, nil)
 	if err != nil {
@@ -652,6 +656,10 @@ func TestModerationService_DeleteNotificationsContainSnapshots(t *testing.T) {
 	}
 	if len(commentItems.Items) != 1 || !strings.Contains(commentItems.Items[0].Context, "Comment body content") {
 		t.Fatalf("expected deleted comment context to show body, got %+v", commentItems.Items)
+	}
+	expectedCommentPath := "/post/" + strconv.FormatInt(commentPost.ID, 10) + "#comment-" + strconv.FormatInt(comment.ID, 10)
+	if commentItems.Items[0].LinkPath != expectedCommentPath {
+		t.Fatalf("expected deleted comment link path %q, got %+v", expectedCommentPath, commentItems.Items[0])
 	}
 }
 
@@ -812,6 +820,10 @@ func TestModerationService_DeletedCommentNotificationProvidesAppealEntrypoint(t 
 	}
 	if !item.CanAppeal {
 		t.Fatalf("expected deleted comment notification to expose appeal action, got %+v", item)
+	}
+	expectedPath := "/post/" + strconv.FormatInt(post.ID, 10) + "#comment-" + strconv.FormatInt(comment.ID, 10)
+	if item.LinkPath != expectedPath {
+		t.Fatalf("expected deleted comment notification to link to comment path %q, got %+v", expectedPath, item)
 	}
 	if !strings.Contains(item.CommentPreview, "comment hidden from thread") {
 		t.Fatalf("expected comment preview in notification, got %+v", item)
